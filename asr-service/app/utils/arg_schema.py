@@ -107,6 +107,12 @@ ARG_SPECS = (
         help_en="Max merged VAD segment length in seconds (default: 5)",
     ),
     ArgSpec(
+        key="asr_batch_size", flags=("--asr-batch-size",), default=16, type=int,
+        group="离线任务",
+        help="standard GPU Qwen ASR 每批 chunk 数 (default: 16)",
+        help_en="Chunks per standard GPU Qwen ASR batch (default: 16)",
+    ),
+    ArgSpec(
         key="api_key", flags=("--api-key",), default=None, group="服务",
         help="API 密钥，设置后启用 Bearer token 认证（覆盖 ASR_API_KEY 环境变量）",
         help_en="API key; enables Bearer token auth when set "

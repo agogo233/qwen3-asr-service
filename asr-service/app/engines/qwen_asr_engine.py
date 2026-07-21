@@ -16,10 +16,12 @@ class QwenASREngine:
         model_size: str = "0.6b",
         device: str = "cuda:0",
         enable_align: bool = True,
+        asr_batch_size: int = 16,
     ):
         self._model_size = model_size
         self._device = device
         self._enable_align = enable_align
+        self._asr_batch_size = asr_batch_size
         self._model = None
         # Qwen3ASRModel.generate 非线程安全：prefill 写 self.rope_deltas、
         # decode 步回读（modeling_qwen3_asr.py:1221/1224），并发调用会交叉污染
@@ -42,7 +44,7 @@ class QwenASREngine:
             pretrained_model_name_or_path=local_dir,
             dtype=dtype,
             device_map=self._device,
-            max_inference_batch_size=32,
+            max_inference_batch_size=self._asr_batch_size,
             max_new_tokens=256,
         )
 

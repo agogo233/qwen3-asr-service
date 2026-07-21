@@ -96,7 +96,7 @@ VAD_SPEECH_NOISE_THRES = 0.6    # FSMN-VAD 语音/噪声判决阈值（离线+�
 
 # ─── ASR 推理 ───
 
-ASR_BATCH_SIZE = 32             # 批量推理每批 chunk 数（与 Qwen3 max_inference_batch_size 对齐）
+ASR_BATCH_SIZE = 16             # 批量推理每批 chunk 数（与 Qwen3 max_inference_batch_size 对齐）
 
 # ─── 音频处理 ───
 
