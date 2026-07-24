@@ -158,3 +158,15 @@ def test_load_assembles_kwargs_and_sets_model(mocker):
     assert kwargs["pretrained_model_name_or_path"] == MODEL_LOCAL_MAP["asr_0.6b"]
     # enable_align=False 不应注入 forced_aligner
     assert "forced_aligner" not in kwargs
+
+
+def test_load_passes_configured_asr_batch_size(mocker):
+    mocker.patch("app.engines.qwen_asr_engine.ensure_model")
+    import qwen_asr
+    from_pretrained = mocker.patch.object(
+        qwen_asr.Qwen3ASRModel, "from_pretrained", return_value=MagicMock(),
+    )
+
+    QwenASREngine(device="cpu", enable_align=False, asr_batch_size=7).load()
+
+    assert from_pretrained.call_args.kwargs["max_inference_batch_size"] == 7

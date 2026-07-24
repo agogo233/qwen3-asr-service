@@ -17,7 +17,7 @@ def _args(**over):
     base = dict(
         serve_mode="standard", device="cpu", model_size=None, enable_align=True,
         enable_punc=False, model_source="modelscope", host=None, port=None,
-        web=False, max_segment=5, api_key=None, max_queue_size=None,
+        web=False, max_segment=5, asr_batch_size=4, api_key=None, max_queue_size=None,
     )
     base.update(over)
     return types.SimpleNamespace(**base)
@@ -35,7 +35,7 @@ def isolated_create_app(tmp_path, monkeypatch):
     root = logging.getLogger()
     saved_handlers = root.handlers[:]
     saved_level = root.level
-    keys = ("MODEL_SOURCE", "MAX_SEGMENT_DURATION", "HOST", "PORT", "API_KEY", "MAX_QUEUE_SIZE",
+    keys = ("MODEL_SOURCE", "MAX_SEGMENT_DURATION", "ASR_BATCH_SIZE", "HOST", "PORT", "API_KEY", "MAX_QUEUE_SIZE",
             "SERVE_MODE", "ENABLE_STREAM", "MAX_STREAM_SESSIONS", "STREAM_ASR_CONCURRENCY",
             "CONFIG_FILE", "ENABLE_SPEAKER", "SPEAKER_THRESHOLD", "SPEAKER_MAX",
             "SPEAKER_MIN_SEG_MS", "SPEAKER_MAX_WINDOWS",
@@ -168,7 +168,11 @@ def test_standard_mode_with_stream_mounts_ws(isolated_create_app, monkeypatch):
         def load(self): pass
 
     class FakeASR:
-        def __init__(self, *a, **k): self._model = MagicMock()
+        init_kwargs = None
+
+        def __init__(self, *a, **k):
+            type(self).init_kwargs = k
+            self._model = MagicMock()
         def load(self): pass
         @property
         def align_enabled(self): return True
@@ -189,8 +193,11 @@ def test_standard_mode_with_stream_mounts_ws(isolated_create_app, monkeypatch):
     monkeypatch.setattr(main, "PuncEngine", FakePunc)
     monkeypatch.setattr(main, "TaskManager", FakeTM)
 
-    app = main.create_app(_args(serve_mode="standard", device="auto", enable_stream=True))
+    app = main.create_app(_args(
+        serve_mode="standard", device="auto", enable_stream=True, asr_batch_size=7))
     client = TestClient(app)
+
+    assert FakeASR.init_kwargs["asr_batch_size"] == 7
 
     # capabilities 反映实时已启用
     caps = client.get("/v1/capabilities").json()
@@ -322,6 +329,15 @@ def test_parse_and_apply_vllm_align_device(monkeypatch):
     finally:
         for k, v in saved.items():
             setattr(cfg, k, v)
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_apply_cli_config_rejects_non_positive_asr_batch_size(monkeypatch, value):
+    from app.main import _apply_cli_config, parse_args
+
+    monkeypatch.setattr("sys.argv", ["prog", "--no-config", "--asr-batch-size", str(value)])
+    with pytest.raises(ValueError, match="asr_batch_size 必须为正整数"):
+        _apply_cli_config(parse_args())
 
 
 def test_apply_cli_config_writes_stream(monkeypatch):

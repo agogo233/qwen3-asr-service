@@ -200,6 +200,12 @@ def test_merge_cli_explicit_default_over_file(service_root):
     assert merged.device == "auto"
 
 
+def test_merge_cli_asr_batch_size_over_file(service_root):
+    _write(service_root, "asr_batch_size: 7\n")
+    merged = cf.merge_runtime_config(_ns(asr_batch_size=3))
+    assert merged.asr_batch_size == 3
+
+
 def test_merge_cli_negative_bool_over_file(service_root):
     """反向 flag（--no-stream 等）使 CLI 能把文件设 true 的布尔开关覆盖回 false。"""
     _write(service_root, "enable_stream: true\nweb: true\n")
@@ -224,6 +230,7 @@ def test_example_passes_schema_validation():
     assert parsed["device"] == "auto"   # 自动检测：无 GPU 回退 CPU，避免首次生成 config 即写死 cuda 崩溃
     assert parsed["host"] == "127.0.0.1"
     assert parsed["model_size"] == "0.6b"
+    assert parsed["asr_batch_size"] == 16
     assert parsed["enable_align"] is False
     assert parsed["enable_stream"] is True
     assert parsed["web"] is True
