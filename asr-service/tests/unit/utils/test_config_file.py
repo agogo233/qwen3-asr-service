@@ -230,7 +230,7 @@ def test_example_passes_schema_validation():
     assert parsed["device"] == "auto"   # 自动检测：无 GPU 回退 CPU，避免首次生成 config 即写死 cuda 崩溃
     assert parsed["host"] == "127.0.0.1"
     assert parsed["model_size"] == "0.6b"
-    assert parsed["asr_batch_size"] == 16
+    assert parsed["asr_batch_size"] == 32
     assert parsed["enable_align"] is False
     assert parsed["enable_stream"] is True
     assert parsed["web"] is True

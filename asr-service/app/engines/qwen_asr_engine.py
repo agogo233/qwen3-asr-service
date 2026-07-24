@@ -16,8 +16,10 @@ class QwenASREngine:
         model_size: str = "0.6b",
         device: str = "cuda:0",
         enable_align: bool = True,
-        asr_batch_size: int = 16,
+        asr_batch_size: int = 32,
     ):
+        if asr_batch_size <= 0:
+            raise ValueError(f"asr_batch_size 必须为正整数，收到 {asr_batch_size}")
         self._model_size = model_size
         self._device = device
         self._enable_align = enable_align

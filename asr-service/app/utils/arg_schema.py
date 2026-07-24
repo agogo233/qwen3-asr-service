@@ -107,10 +107,12 @@ ARG_SPECS = (
         help_en="Max merged VAD segment length in seconds (default: 5)",
     ),
     ArgSpec(
-        key="asr_batch_size", flags=("--asr-batch-size",), default=16, type=int,
+        key="asr_batch_size", flags=("--asr-batch-size",), default=32, type=int,
         group="离线任务",
-        help="standard GPU Qwen ASR 每批 chunk 数 (default: 16)",
-        help_en="Chunks per standard GPU Qwen ASR batch (default: 16)",
+        help="离线推理每批 chunk 数（Qwen3 max_inference_batch_size；"
+             "亦影响 CPU/OpenVINO 分批粒度）(default: 32)",
+        help_en="Chunks per offline inference batch (Qwen3 max_inference_batch_size; "
+                "also affects CPU/OpenVINO batching) (default: 32)",
     ),
     ArgSpec(
         key="api_key", flags=("--api-key",), default=None, group="服务",

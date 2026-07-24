@@ -46,6 +46,7 @@
 | `--web` / `--no-web` | - | 关闭 | Web UI（`/web-ui` 离线演示页、`/web-ui/stream` 实时测试页、`/web-ui/docs` 文档中心） |
 | `--api-key` | 字符串 | 无 | API 密钥，设置后启用 Bearer Token 认证（覆盖 `ASR_API_KEY` 环境变量） |
 | `--max-segment` | 秒数 | `5` | VAD 切片合并最大时长 |
+| `--asr-batch-size` | 数字 | `32` | 离线推理每批 chunk 数（Qwen3 `max_inference_batch_size`）；亦影响 CPU/OpenVINO 分批粒度，须为正整数，显存吃紧可调小 |
 | `--max-queue-size` | 数字 | `100` | 离线任务队列最大长度 |
 
 ### 实时转写

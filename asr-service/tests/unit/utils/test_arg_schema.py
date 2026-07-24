@@ -20,7 +20,7 @@ LEGACY_DEFAULTS = {
     "port": None,
     "web": False,
     "max_segment": 5,
-    "asr_batch_size": 16,
+    "asr_batch_size": 32,
     "api_key": None,
     "max_queue_size": None,
     "enable_stream": False,

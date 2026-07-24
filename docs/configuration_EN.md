@@ -46,6 +46,7 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 | `--web` / `--no-web` | - | Disabled | Web UI (`/web-ui` offline demo, `/web-ui/stream` real-time test page, `/web-ui/docs` documentation center) |
 | `--api-key` | String | None | API key; enables Bearer Token auth (overrides the `ASR_API_KEY` env var) |
 | `--max-segment` | Seconds | `5` | Max VAD segment merge duration |
+| `--asr-batch-size` | Number | `32` | Chunks per offline inference batch (Qwen3 `max_inference_batch_size`); also affects CPU/OpenVINO batching, must be a positive integer, lower it if VRAM is tight |
 | `--max-queue-size` | Number | `100` | Max offline task queue length |
 
 ### Real-time Transcription

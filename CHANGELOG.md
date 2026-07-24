@@ -3,6 +3,14 @@
 本项目所有重要变更记录于此。版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)，
 发布版本号经由 git tag（去掉 `v` 前缀）注入镜像 `APP_VERSION`，体现在 `/openapi.json` 的 `info.version`。
 
+## [2.4.1] - 2026-07-24
+
+离线 ASR 推理批大小可配置。
+
+### 新增 / 改进
+- **`--asr-batch-size`（配置文件键 `asr_batch_size`，默认 `32`）**：把此前硬编码的 Qwen3 `max_inference_batch_size` 提为可配置项，经四层优先级（默认 < 环境变量 < 配置文件 < CLI）生效；亦影响 CPU/OpenVINO 离线分批粒度。显存吃紧可调小，须为正整数。默认值维持 `32`，升级无行为变化。
+- 校验下沉到引擎边界：`QwenASREngine` 构造即拒绝非正整数，`_apply_cli_config` 校验保留，双重防御。
+
 ## [2.4.0] - 2026-06-24
 
 实时声纹登记 + 离线/实时回传 speaker_id（客户端跨会话记忆声纹）。

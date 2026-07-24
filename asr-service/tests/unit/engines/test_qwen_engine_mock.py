@@ -170,3 +170,9 @@ def test_load_passes_configured_asr_batch_size(mocker):
     QwenASREngine(device="cpu", enable_align=False, asr_batch_size=7).load()
 
     assert from_pretrained.call_args.kwargs["max_inference_batch_size"] == 7
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_engine_rejects_non_positive_asr_batch_size(value):
+    with pytest.raises(ValueError, match="asr_batch_size 必须为正整数"):
+        QwenASREngine(device="cpu", enable_align=False, asr_batch_size=value)

@@ -108,9 +108,10 @@ def _apply_cli_config(args):
     """将命令行参数写入全局配置（模式无关部分）"""
     cfg.MODEL_SOURCE = args.model_source
     cfg.MAX_SEGMENT_DURATION = args.max_segment
-    if args.asr_batch_size <= 0:
-        raise ValueError(f"asr_batch_size 必须为正整数，收到 {args.asr_batch_size}")
-    cfg.ASR_BATCH_SIZE = args.asr_batch_size
+    asr_batch_size = getattr(args, "asr_batch_size", cfg.ASR_BATCH_SIZE)
+    if asr_batch_size <= 0:
+        raise ValueError(f"asr_batch_size 必须为正整数，收到 {asr_batch_size}")
+    cfg.ASR_BATCH_SIZE = asr_batch_size
     if args.host is not None:
         cfg.HOST = args.host
     if args.port is not None:

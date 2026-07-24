@@ -17,7 +17,7 @@ port: 8765
 web: true                   # /web-ui 演示页
 api_key: ""                 # 留空 = 不鉴权（本行会覆盖 ASR_API_KEY 环境变量；想用环境变量请删除本行）
 max_segment: 5              # VAD 切片合并最大时长（秒）
-asr_batch_size: 16          # standard GPU Qwen ASR 每批 chunk 数
+asr_batch_size: 32          # 离线推理每批 chunk 数（亦影响 CPU/OpenVINO 分批粒度）
 # max_queue_size: 100       # 任务队列最大长度
 
 # ── 实时转写 ──
