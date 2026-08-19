@@ -1,6 +1,7 @@
-/* 说话人管理页（声纹库）：列表 / 改名备注 / 删除 / 降级指引。
+/* 说话人管理页（声纹库）：列表 / 改名备注 / 删除 / 登记样本 / 单文件识别 / 降级指引。
  * 体例同 offline.js/stream.js：无构建 IIFE，依赖全局 Vue / naive / AsrCommon。
- * 仅消费 /v2/speakers* 管理 API；登记（上传样本）走 API/curl，不在本页。
+ * 消费 /v2/speakers* 管理 API：登记 POST（多文件 files）、识别 POST /identify（单文件 file）、
+ * 列表 GET、改名 PATCH、删除 DELETE；登记与识别弹窗仅 blocked==='' 时可见。
  */
 (function () {
   'use strict';
@@ -43,6 +44,30 @@
       'block.mismatch.title': '声纹模型版本不一致',
       'block.mismatch.body': '库内模板与当前引擎 model_tag 不一致：登记/识别已禁用，仅保留查看与删除。处理方式：删除库文件重建，或回退到登记时的引擎版本。',
       'block.error.title': '加载失败',
+      // 登记弹窗
+      'btn.enroll': '登记说话人', 'btn.identify': '识别说话人',
+      'enroll.title': '登记说话人', 'enroll.nameLabel': '显示名称',
+      'enroll.namePlaceholder': '如：张三', 'enroll.noteLabel': '备注（可选）',
+      'enroll.notePlaceholder': '如：产品部，周会常驻',
+      'enroll.consentLabel': '我已确认：样本音频已获数据主体知情同意，声纹属于生物识别信息，仅用于本服务的声纹识别。',
+      'enroll.uploadHint': '点击或拖拽上传单人音频文件（可多选）',
+      'enroll.formats': 'wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus',
+      'enroll.uploading': '提交中…',
+      'msg.enrollSuccess': '登记成功：{0}（{1} 条模板）',
+      'msg.enrollSuccessHint': '登记成功：{0}（{1} 条模板，{2}）',
+      'msg.enrollConsentRequired': '必须勾选同意声明',
+      'msg.enrollNoFile': '请至少选择 1 个音频文件',
+      'msg.enrollFailed': '登记失败：{0}',
+      // 识别弹窗
+      'identify.title': '识别说话人', 'identify.uploadHint': '上传音频文件进行 1:N 识别',
+      'identify.uploading': '识别中…',
+      'identify.matched': '匹配到：{0}', 'identify.unmatched': '未匹配（相似度不足）',
+      'identify.score': '相似度：{0}',
+      'identify.noFile': '请选择音频文件',
+      'identify.failed': '识别失败：{0}',
+      'identify.noMatchHint': '未匹配：声纹库中无足够相似的模板。',
+      // 降级补充
+      'block.mismatch.note': '登记与识别已禁用；列表保留。',
     },
     en: {
       'page.title': 'Speaker Management - Qwen3-ASR Service',
@@ -73,6 +98,30 @@
       'block.mismatch.title': 'Voiceprint model version mismatch',
       'block.mismatch.body': 'Templates in the library do not match the current engine model_tag: enrollment/identification is disabled, only view and delete remain. Fix: delete the library file and rebuild, or roll back to the engine version used at enrollment.',
       'block.error.title': 'Load failed',
+      // Enroll modal
+      'btn.enroll': 'Enroll Speaker', 'btn.identify': 'Identify',
+      'enroll.title': 'Enroll Speaker', 'enroll.nameLabel': 'Display name',
+      'enroll.namePlaceholder': 'e.g. John', 'enroll.noteLabel': 'Note (optional)',
+      'enroll.notePlaceholder': 'e.g. Product team, weekly regular',
+      'enroll.consentLabel': 'I confirm that the audio samples have been obtained with the data subject\'s informed consent; voiceprints are biometric data and are used solely for speaker identification in this service.',
+      'enroll.uploadHint': 'Click or drag to upload single-speaker audio files (multi-select)',
+      'enroll.formats': 'wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus',
+      'enroll.uploading': 'Submitting…',
+      'msg.enrollSuccess': 'Enrolled: {0} ({1} template(s))',
+      'msg.enrollSuccessHint': 'Enrolled: {0} ({1} template(s), {2})',
+      'msg.enrollConsentRequired': 'Must check the consent declaration',
+      'msg.enrollNoFile': 'Select at least 1 audio file',
+      'msg.enrollFailed': 'Enrollment failed: {0}',
+      // Identify modal
+      'identify.title': 'Identify Speaker', 'identify.uploadHint': 'Upload an audio file for 1:N speaker identification',
+      'identify.uploading': 'Identifying…',
+      'identify.matched': 'Matched: {0}', 'identify.unmatched': 'Unmatched (similarity below threshold)',
+      'identify.score': 'Similarity: {0}',
+      'identify.noFile': 'Please select an audio file',
+      'identify.failed': 'Identification failed: {0}',
+      'identify.noMatchHint': 'No match: no templates in the library with sufficient similarity.',
+      // Mismatch note
+      'block.mismatch.note': 'Enrollment and identification are disabled; list view remains available.',
     },
   };
   const t = makeT(M);
@@ -177,6 +226,77 @@
         }
       }
 
+      // —— API 错误统一处理：返回 detail 字符串；401 时更新 blocked 态并关闭弹窗 ——
+      function handleError(r, onClose) {
+        return (async () => {
+          if (r.status === 401) {
+            blocked.value = apiKey.value.trim() ? 'unauthorized' : 'need_key';
+            if (onClose) onClose();
+            return t('block.unauthorized.title');
+          }
+          const d = await r.json().catch(() => ({}));
+          return (d.detail || 'HTTP ' + r.status);
+        })();
+      }
+
+      // —— 登记说话人 ——
+      const enroll = reactive({ show: false, name: '', note: '', consent: false, files: [], submitting: false });
+      function openEnroll() {
+        enroll.show = true; enroll.name = ''; enroll.note = ''; enroll.consent = false; enroll.files = [];
+      }
+      async function submitEnroll() {
+        if (!enroll.name.trim()) { message.warning(t('msg.nameRequired')); return; }
+        if (!enroll.consent) { message.warning(t('msg.enrollConsentRequired')); return; }
+        if (!enroll.files.length) { message.warning(t('msg.enrollNoFile')); return; }
+        enroll.submitting = true;
+        const form = new FormData();
+        form.append('name', enroll.name.trim());
+        form.append('consent', 'true');
+        if (enroll.note.trim()) form.append('note', enroll.note.trim());
+        enroll.files.forEach(f => form.append('files', f.file));
+        try {
+          const r = await fetch('/v2/speakers', { method: 'POST', body: form, headers: authHeaders() });
+          if (!r.ok) {
+            const detail = await handleError(r, () => { enroll.show = false; });
+            throw new Error(detail);
+          }
+          const data = await r.json();
+          const hint = data.quality_hint ? t('msg.enrollSuccessHint', data.name, data.templates, data.quality_hint)
+                                          : t('msg.enrollSuccess', data.name, data.templates);
+          message.success(hint);
+          enroll.show = false; enroll.files = [];
+          await load();
+        } catch (e) {
+          message.error(t('msg.enrollFailed', e.message));
+        } finally {
+          enroll.submitting = false;
+        }
+      }
+
+      // —— 识别说话人（单文件 1:N）——
+      const identify = reactive({ show: false, files: [], submitting: false, result: null, error: '' });
+      function openIdentify() {
+        identify.show = true; identify.files = []; identify.result = null; identify.error = '';
+      }
+      async function submitIdentify() {
+        if (!identify.files.length) { message.warning(t('identify.noFile')); return; }
+        identify.submitting = true; identify.result = null; identify.error = '';
+        const form = new FormData();
+        form.append('file', identify.files[0].file);
+        try {
+          const r = await fetch('/v2/speakers/identify', { method: 'POST', body: form, headers: authHeaders() });
+          if (!r.ok) {
+            const detail = await handleError(r, () => { identify.show = false; });
+            throw new Error(detail);
+          }
+          identify.result = await r.json();
+        } catch (e) {
+          identify.error = e.message;
+        } finally {
+          identify.submitting = false;
+        }
+      }
+
       // —— 表格列（render 函数式，Naive UI data-table 体例）——
       // computed：t() 随语言切换刷新表头与表内文案
       // 英文表头/按钮明显更长（Templates / Rename / Note 等）：列宽随语言取值，避免折行
@@ -226,7 +346,8 @@
       setTitle();
       watch(locale, setTitle);
 
-      return { rows, loading, guide, columns, load, edit, saveEdit, t };
+      return { rows, loading, guide, columns, load, edit, saveEdit, removeSpeaker,
+               enroll, openEnroll, submitEnroll, identify, openIdentify, submitIdentify, t };
     },
     template: `
       <div style="max-width:980px;margin:0 auto;">
@@ -235,9 +356,17 @@
             <span class="panel-title"><a-icon name="list" size="15"></a-icon>{{ t('card.title') }}</span>
           </template>
           <template #header-extra>
-            <n-button size="small" tertiary :loading="loading" @click="load">
-              <a-icon name="refresh" size="14" style="margin-right:5px;"></a-icon>{{ t('btn.refresh') }}
-            </n-button>
+            <n-space size="small">
+              <n-button v-if="!guide" size="small" tertiary :disabled="enroll.submitting" @click="openEnroll">
+                <a-icon name="upload" size="14" style="margin-right:5px;"></a-icon>{{ t('btn.enroll') }}
+              </n-button>
+              <n-button v-if="!guide" size="small" tertiary :disabled="identify.submitting" @click="openIdentify">
+                <a-icon name="mic" size="14" style="margin-right:5px;"></a-icon>{{ t('btn.identify') }}
+              </n-button>
+              <n-button size="small" tertiary :loading="loading" @click="load">
+                <a-icon name="refresh" size="14" style="margin-right:5px;"></a-icon>{{ t('btn.refresh') }}
+              </n-button>
+            </n-space>
           </template>
 
           <n-alert v-if="guide" :type="guide.type" :title="guide.title" :show-icon="true"
@@ -271,6 +400,68 @@
             <n-space justify="end">
               <n-button size="small" :disabled="edit.saving" @click="edit.show = false">{{ t('btn.cancel') }}</n-button>
               <n-button size="small" type="primary" :loading="edit.saving" @click="saveEdit">{{ t('btn.save') }}</n-button>
+            </n-space>
+          </n-space>
+        </n-modal>
+
+        <n-modal v-model:show="enroll.show" preset="card" :title="t('enroll.title')"
+                 style="width:520px;" :mask-closable="!enroll.submitting">
+          <n-space vertical size="large">
+            <div>
+              <n-text depth="3" style="display:block;font-size:.78em;margin-bottom:5px;">{{ t('enroll.nameLabel') }}</n-text>
+              <n-input v-model:value="enroll.name" :placeholder="t('enroll.namePlaceholder')" maxlength="64"></n-input>
+            </div>
+            <div>
+              <n-text depth="3" style="display:block;font-size:.78em;margin-bottom:5px;">{{ t('enroll.noteLabel') }}</n-text>
+              <n-input v-model:value="enroll.note" :placeholder="t('enroll.notePlaceholder')" maxlength="200"></n-input>
+            </div>
+            <n-checkbox v-model:checked="enroll.consent" size="small">
+              <span style="font-size:.82em;opacity:.85;">{{ t('enroll.consentLabel') }}</span>
+            </n-checkbox>
+            <n-upload multiple :default-upload="false" :show-file-list="true"
+                      accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,.wma,.amr,.opus"
+                      :file-list="enroll.files" @change="(p) => { enroll.files = (p.fileList || []).filter(f => f.status === 'ready' || f.status === 'uploading') }">
+              <n-upload-dragger>
+                <div style="color:#14b8a6;margin-bottom:8px;"><a-icon name="upload" size="30"></a-icon></div>
+                <n-text style="font-size:.92em;font-weight:600;">{{ t('enroll.uploadHint') }}</n-text>
+                <n-p depth="3" style="font-size:.76em;margin:6px 0 0;">{{ t('enroll.formats') }}</n-p>
+              </n-upload-dragger>
+            </n-upload>
+            <n-space justify="end">
+              <n-button size="small" :disabled="enroll.submitting" @click="enroll.show = false">{{ t('btn.cancel') }}</n-button>
+              <n-button size="small" type="primary" :loading="enroll.submitting" @click="submitEnroll">{{ t('enroll.uploading') }}</n-button>
+            </n-space>
+          </n-space>
+        </n-modal>
+
+        <n-modal v-model:show="identify.show" preset="card" :title="t('identify.title')"
+                 style="width:460px;" :mask-closable="!identify.submitting">
+          <n-space vertical size="large">
+            <n-upload :default-upload="false" :show-file-list="true"
+                      accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,.wma,.amr,.opus"
+                      :file-list="identify.files" @change="(p) => { identify.files = p.fileList || [] }">
+              <n-upload-dragger>
+                <div style="color:#14b8a6;margin-bottom:8px;"><a-icon name="mic" size="30"></a-icon></div>
+                <n-text style="font-size:.92em;font-weight:600;">{{ t('identify.uploadHint') }}</n-text>
+                <n-p depth="3" style="font-size:.76em;margin:6px 0 0;">{{ t('enroll.formats') }}</n-p>
+              </n-upload-dragger>
+            </n-upload>
+            <n-divider style="margin:0;"></n-divider>
+            <template v-if="identify.result || identify.error">
+              <n-alert v-if="identify.result" :title="identify.result.matched
+                                ? t('identify.matched', identify.result.name || '—')
+                                : t('identify.unmatched')"
+                       :type="identify.result.matched ? 'success' : 'warning'" :show-icon="false">
+                <template #default>
+                  {{ t('identify.score', (identify.result.score != null ? identify.result.score.toFixed(3) : '—')) }}
+                  <n-text v-if="!identify.result.matched" depth="3" style="font-size:.82em;margin-top:8px;display:block;">{{ t('identify.noMatchHint') }}</n-text>
+                </template>
+              </n-alert>
+              <n-alert v-else :title="t('identify.failed', identify.error)" type="error" :show-icon="false" />
+            </template>
+            <n-space justify="end" v-if="!identify.result && !identify.error">
+              <n-button size="small" :disabled="identify.submitting || !identify.files.length" @click="identify.show = false">{{ t('btn.cancel') }}</n-button>
+              <n-button size="small" type="primary" :loading="identify.submitting" @click="submitIdentify">{{ t('identify.uploading') }}</n-button>
             </n-space>
           </n-space>
         </n-modal>
