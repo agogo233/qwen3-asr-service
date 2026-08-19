@@ -46,13 +46,13 @@
       'block.error.title': '加载失败',
       // 登记弹窗
       'btn.enroll': '登记说话人', 'btn.identify': '识别说话人',
+      'btn.enrollSubmit': '登记', 'btn.identifySubmit': '识别',
       'enroll.title': '登记说话人', 'enroll.nameLabel': '显示名称',
       'enroll.namePlaceholder': '如：张三', 'enroll.noteLabel': '备注（可选）',
       'enroll.notePlaceholder': '如：产品部，周会常驻',
       'enroll.consentLabel': '我已确认：样本音频已获数据主体知情同意，声纹属于生物识别信息，仅用于本服务的声纹识别。',
       'enroll.uploadHint': '点击或拖拽上传单人音频文件（可多选）',
       'enroll.formats': 'wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus',
-      'enroll.uploading': '提交中…',
       'msg.enrollSuccess': '登记成功：{0}（{1} 条模板）',
       'msg.enrollSuccessHint': '登记成功：{0}（{1} 条模板，{2}）',
       'msg.enrollConsentRequired': '必须勾选同意声明',
@@ -60,14 +60,11 @@
       'msg.enrollFailed': '登记失败：{0}',
       // 识别弹窗
       'identify.title': '识别说话人', 'identify.uploadHint': '上传音频文件进行 1:N 识别',
-      'identify.uploading': '识别中…',
       'identify.matched': '匹配到：{0}', 'identify.unmatched': '未匹配（相似度不足）',
       'identify.score': '相似度：{0}',
       'identify.noFile': '请选择音频文件',
       'identify.failed': '识别失败：{0}',
       'identify.noMatchHint': '未匹配：声纹库中无足够相似的模板。',
-      // 降级补充
-      'block.mismatch.note': '登记与识别已禁用；列表保留。',
     },
     en: {
       'page.title': 'Speaker Management - Qwen3-ASR Service',
@@ -100,13 +97,13 @@
       'block.error.title': 'Load failed',
       // Enroll modal
       'btn.enroll': 'Enroll Speaker', 'btn.identify': 'Identify',
+      'btn.enrollSubmit': 'Enroll', 'btn.identifySubmit': 'Identify',
       'enroll.title': 'Enroll Speaker', 'enroll.nameLabel': 'Display name',
       'enroll.namePlaceholder': 'e.g. John', 'enroll.noteLabel': 'Note (optional)',
       'enroll.notePlaceholder': 'e.g. Product team, weekly regular',
       'enroll.consentLabel': 'I confirm that the audio samples have been obtained with the data subject\'s informed consent; voiceprints are biometric data and are used solely for speaker identification in this service.',
       'enroll.uploadHint': 'Click or drag to upload single-speaker audio files (multi-select)',
       'enroll.formats': 'wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus',
-      'enroll.uploading': 'Submitting…',
       'msg.enrollSuccess': 'Enrolled: {0} ({1} template(s))',
       'msg.enrollSuccessHint': 'Enrolled: {0} ({1} template(s), {2})',
       'msg.enrollConsentRequired': 'Must check the consent declaration',
@@ -114,14 +111,11 @@
       'msg.enrollFailed': 'Enrollment failed: {0}',
       // Identify modal
       'identify.title': 'Identify Speaker', 'identify.uploadHint': 'Upload an audio file for 1:N speaker identification',
-      'identify.uploading': 'Identifying…',
       'identify.matched': 'Matched: {0}', 'identify.unmatched': 'Unmatched (similarity below threshold)',
       'identify.score': 'Similarity: {0}',
       'identify.noFile': 'Please select an audio file',
       'identify.failed': 'Identification failed: {0}',
       'identify.noMatchHint': 'No match: no templates in the library with sufficient similarity.',
-      // Mismatch note
-      'block.mismatch.note': 'Enrollment and identification are disabled; list view remains available.',
     },
   };
   const t = makeT(M);
@@ -420,7 +414,7 @@
             </n-checkbox>
             <n-upload multiple :default-upload="false" :show-file-list="true"
                       accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,.wma,.amr,.opus"
-                      :file-list="enroll.files" @change="(p) => { enroll.files = (p.fileList || []).filter(f => f.status === 'ready' || f.status === 'uploading') }">
+                      :file-list="enroll.files" @change="(p) => { enroll.files = p.fileList || [] }">
               <n-upload-dragger>
                 <div style="color:#14b8a6;margin-bottom:8px;"><a-icon name="upload" size="30"></a-icon></div>
                 <n-text style="font-size:.92em;font-weight:600;">{{ t('enroll.uploadHint') }}</n-text>
@@ -429,7 +423,7 @@
             </n-upload>
             <n-space justify="end">
               <n-button size="small" :disabled="enroll.submitting" @click="enroll.show = false">{{ t('btn.cancel') }}</n-button>
-              <n-button size="small" type="primary" :loading="enroll.submitting" @click="submitEnroll">{{ t('enroll.uploading') }}</n-button>
+              <n-button size="small" type="primary" :loading="enroll.submitting" @click="submitEnroll">{{ t('btn.enrollSubmit') }}</n-button>
             </n-space>
           </n-space>
         </n-modal>
@@ -439,7 +433,7 @@
           <n-space vertical size="large">
             <n-upload :default-upload="false" :show-file-list="true"
                       accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,.wma,.amr,.opus"
-                      :file-list="identify.files" @change="(p) => { identify.files = p.fileList || [] }">
+                      :file-list="identify.files" @change="(p) => { const list = p.fileList || []; identify.files = list.length ? [list[list.length - 1]] : [] }">
               <n-upload-dragger>
                 <div style="color:#14b8a6;margin-bottom:8px;"><a-icon name="mic" size="30"></a-icon></div>
                 <n-text style="font-size:.92em;font-weight:600;">{{ t('identify.uploadHint') }}</n-text>
@@ -461,7 +455,7 @@
             </template>
             <n-space justify="end" v-if="!identify.result && !identify.error">
               <n-button size="small" :disabled="identify.submitting || !identify.files.length" @click="identify.show = false">{{ t('btn.cancel') }}</n-button>
-              <n-button size="small" type="primary" :loading="identify.submitting" @click="submitIdentify">{{ t('identify.uploading') }}</n-button>
+              <n-button size="small" type="primary" :loading="identify.submitting" @click="submitIdentify">{{ t('btn.identifySubmit') }}</n-button>
             </n-space>
           </n-space>
         </n-modal>
