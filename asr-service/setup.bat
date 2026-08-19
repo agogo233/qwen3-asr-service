@@ -1,7 +1,11 @@
-﻿@echo off
+@echo off
 setlocal enabledelayedexpansion
 
 cd /d "%~dp0"
+
+:: Mirror indexes (China defaults; override with PIP_INDEX_URL / TORCH_INDEX_URL env)
+set PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+if not "%PIP_INDEX_URL%"=="" set PIP_INDEX=%PIP_INDEX_URL%
 
 echo ==========================================
 echo   Qwen3-ASR Service Windows Setup
@@ -127,7 +131,7 @@ echo [INFO] venv virtual environment activated
 
 :: Upgrade pip in venv
 echo [INFO] Upgrading pip...
-%PYTHON_BIN% -m pip install --upgrade pip
+%PYTHON_BIN% -m pip install --upgrade pip --index-url %PIP_INDEX%
 goto :python_ready
 
 :python_ready
@@ -139,6 +143,27 @@ if not exist "lib\site-packages" (
     )
 )
 
+:: Fix Embeddable Python ._pth so pip is visible to "python -m pip"
+:: (official Embeddable package ships with "#import site" commented out)
+if "%PYTHON_MODE%"=="portable" (
+    for %%F in ("bin\python\python3*._pth") do (
+        if exist "%%F" (
+            findstr /b /c:"import site" "%%F" >nul
+            if errorlevel 1 (
+                echo [INFO] Enabling import site in %%~nxF ^(Embeddable Python^)...
+                if not exist "%%F.bak" copy /y "%%F" "%%F.bak" >nul
+                > "%%F" (
+                    echo python312.zip
+                    echo .
+                    echo ..\..\lib\site-packages
+                    echo import site
+                )
+                echo [INFO] %%~nxF fixed
+            )
+        )
+    )
+)
+
 :: Install pip for portable mode
 if "%PYTHON_MODE%"=="portable" (
     if not exist "bin\python\Scripts\pip.exe" (
@@ -147,7 +172,12 @@ if "%PYTHON_MODE%"=="portable" (
             echo [INFO] Downloading get-pip.py...
             powershell -Command "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile 'bin\get-pip.py'"
         )
-        bin\python\python.exe bin\get-pip.py
+        bin\python\python.exe bin\get-pip.py --index-url %PIP_INDEX%
+        if errorlevel 1 (
+            echo [ERROR] pip installation failed
+            pause
+            exit /b 1
+        )
         echo [INFO] pip installed
     ) else (
         echo [INFO] pip already installed
@@ -160,10 +190,20 @@ echo [INFO] Checking NVIDIA GPU...
 nvidia-smi >nul 2>&1
 if %errorlevel%==0 (
     echo [INFO] NVIDIA GPU detected, will install CUDA PyTorch
-    set TORCH_INDEX=https://download.pytorch.org/whl/cu124
+    set HAS_GPU=1
+    if "!TORCH_INDEX_URL!"=="" (
+        set TORCH_INDEX=https://mirrors.aliyun.com/pytorch-wheels/cu124
+    ) else (
+        set TORCH_INDEX=!TORCH_INDEX_URL!
+    )
 ) else (
     echo [WARN] No GPU detected, will install CPU PyTorch
-    set TORCH_INDEX=https://download.pytorch.org/whl/cpu
+    set HAS_GPU=0
+    if "!TORCH_INDEX_URL!"=="" (
+        set TORCH_INDEX=https://mirrors.aliyun.com/pytorch-wheels/cpu
+    ) else (
+        set TORCH_INDEX=!TORCH_INDEX_URL!
+    )
 )
 
 :: 5. Model source selection
@@ -215,16 +255,28 @@ if "%MODEL_CHOICE%"=="1" (
 :: 6. Install PyTorch
 echo.
 echo [INFO] Installing PyTorch 2.6.0 (this may take several minutes)...
-if "%TORCH_INDEX%"=="https://download.pytorch.org/whl/cu124" (
+if "%HAS_GPU%"=="1" (
     %PYTHON_BIN% -m pip install %PIP_TARGET% torch==2.6.0+cu124 torchaudio==2.6.0+cu124 --index-url %TORCH_INDEX%
 ) else (
     %PYTHON_BIN% -m pip install %PIP_TARGET% torch torchaudio --index-url %TORCH_INDEX%
 )
+if errorlevel 1 (
+    echo [ERROR] PyTorch installation failed
+    pause
+    exit /b 1
+)
+echo [INFO] PyTorch installed
 
 :: 7. Install other dependencies
 echo.
 echo [INFO] Installing project dependencies...
-%PYTHON_BIN% -m pip install %PIP_TARGET% -r requirements.txt
+%PYTHON_BIN% -m pip install %PIP_TARGET% -r requirements.txt --index-url %PIP_INDEX%
+if errorlevel 1 (
+    echo [ERROR] Dependency installation failed
+    pause
+    exit /b 1
+)
+echo [INFO] Dependencies installed
 
 :end
 echo.

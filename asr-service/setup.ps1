@@ -120,6 +120,23 @@ function Initialize-Venv {
     & $script:PythonBin -m pip install --upgrade pip --index-url $script:PypiIndex 2>$null
 }
 
+function Repair-EmbeddedPth {
+    if ($script:PythonMode -ne 'portable') { return }
+
+    # 官方 Embeddable Python 默认注释 #import site，导致 pip 对 python -m pip 不可见
+    $pth = Get-ChildItem (Join-Path $PSScriptRoot 'bin\python') -Filter 'python3*._pth' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $pth) { return }
+    if (Select-String -Path $pth.FullName -Pattern '^import site$' -Quiet) { return }
+
+    Write-Host "[INFO] Enabling import site in $($pth.Name) (Embeddable Python)..." -ForegroundColor Cyan
+    if (-not (Test-Path "$($pth.FullName).bak")) {
+        Copy-Item $pth.FullName "$($pth.FullName).bak" -Force
+    }
+    Set-Content -Path $pth.FullName -Value @('python312.zip', '.', '../../lib/site-packages', 'import site') -Encoding ASCII
+    Write-Host "[INFO] $($pth.Name) fixed" -ForegroundColor Green
+}
+
 function Install-PipIfNeeded {
     if ($script:PythonMode -ne 'portable') { return }
 
@@ -139,7 +156,12 @@ function Install-PipIfNeeded {
             Write-Host '[INFO] Downloading get-pip.py...' -ForegroundColor Cyan
             Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $getPip
         }
-        & $script:PythonBin $getPip
+        & $script:PythonBin $getPip --index-url $script:PypiIndex
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '[ERROR] pip installation failed' -ForegroundColor Red
+            Read-Host 'Press Enter to exit'
+            exit 1
+        }
         Write-Host '[INFO] pip installed' -ForegroundColor Green
     }
     else {
@@ -198,6 +220,8 @@ function Install-PyTorch {
     & $script:PythonBin @pipArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[ERROR] PyTorch installation failed' -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
+        exit 1
     }
     else {
         Write-Host '[INFO] CUDA PyTorch installed' -ForegroundColor Green
@@ -217,6 +241,8 @@ function Install-Dependencies {
     & $script:PythonBin @pipArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[ERROR] Dependency installation failed' -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
+        exit 1
     }
 }
 
@@ -356,6 +382,7 @@ else {
 }
 
 # --- Common setup (portable or venv) ---
+Repair-EmbeddedPth
 Install-PipIfNeeded
 # 先按 requirements.txt 装入 CPU 版 torch，再由 Install-PyTorch 在 GPU 环境下替换为 CUDA 版
 Install-Dependencies
