@@ -17,6 +17,10 @@ $script:PythonBin = ''
 $script:PipTarget = @()
 $script:ModelSource = ''
 
+# pip 镜像（可用环境变量覆盖；国内默认走清华 PyPI / 阿里云 pytorch-wheels）
+$script:PypiIndex = if ($env:PIP_INDEX_URL) { $env:PIP_INDEX_URL } else { 'https://pypi.tuna.tsinghua.edu.cn/simple' }
+$script:TorchIndex = if ($env:TORCH_INDEX_URL) { $env:TORCH_INDEX_URL } else { 'https://mirrors.aliyun.com/pytorch-wheels/cu124' }
+
 # ============================================================
 # Functions (must be defined before use in PowerShell)
 # ============================================================
@@ -113,7 +117,7 @@ function Initialize-Venv {
 
     # Upgrade pip in venv
     Write-Host '[INFO] Upgrading pip...' -ForegroundColor Cyan
-    & $script:PythonBin -m pip install --upgrade pip 2>$null
+    & $script:PythonBin -m pip install --upgrade pip --index-url $script:PypiIndex 2>$null
 }
 
 function Install-PipIfNeeded {
@@ -188,7 +192,7 @@ function Install-PyTorch {
     if (-not $isTarget) { $pipArgs += '--force-reinstall' }
     $pipArgs += $script:PipTarget + @(
         'torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', 'torchvision==0.21.0+cu124',
-        '--index-url', 'https://download.pytorch.org/whl/cu124'
+        '--index-url', $script:TorchIndex
     )
 
     & $script:PythonBin @pipArgs
@@ -209,7 +213,7 @@ function Install-Dependencies {
 
     Write-Host
     Write-Host '[INFO] Installing project dependencies...' -ForegroundColor Cyan
-    $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @('-r', $reqFile)
+    $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @('-r', $reqFile, '--index-url', $script:PypiIndex)
     & $script:PythonBin @pipArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[ERROR] Dependency installation failed' -ForegroundColor Red

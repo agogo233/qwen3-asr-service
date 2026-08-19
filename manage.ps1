@@ -51,6 +51,10 @@ $script:HasPortable = $false
 $script:PortablePythonVersion = ''
 $script:ActiveComposeVariant = 'gpu'
 
+# pip 镜像（可用环境变量覆盖；国内默认走清华 PyPI / 阿里云 pytorch-wheels）
+$script:PypiIndex = if ($env:PIP_INDEX_URL) { $env:PIP_INDEX_URL } else { 'https://pypi.tuna.tsinghua.edu.cn/simple' }
+$script:TorchIndex = if ($env:TORCH_INDEX_URL) { $env:TORCH_INDEX_URL } else { 'https://mirrors.aliyun.com/pytorch-wheels/cu124' }
+
 # Launch config (defaults)
 $script:Launch = @{
     ModelSize        = 'auto'
@@ -768,7 +772,7 @@ function Portable-UpdateDeps {
     # Step 1: Upgrade pip
     Write-Host
     Write-Info '升级 pip...'
-    & $pythonBin -m pip install --upgrade pip @pipTarget 2>$null
+    & $pythonBin -m pip install --upgrade pip @pipTarget --index-url $script:PypiIndex 2>$null
     Write-Ok 'pip 已升级'
 
     # Step 2: Detect GPU for PyTorch
@@ -796,7 +800,7 @@ function Portable-UpdateDeps {
     if (Test-Path $reqFile) {
         Write-Host
         Write-Info '更新项目依赖...'
-        $depArgs = @('-m', 'pip', 'install', '--upgrade') + $pipTarget + @('-r', $reqFile)
+        $depArgs = @('-m', 'pip', 'install', '--upgrade') + $pipTarget + @('-r', $reqFile, '--index-url', $script:PypiIndex)
         & $pythonBin @depArgs
         if ($LASTEXITCODE -eq 0) { Write-Ok '项目依赖已更新' }
         else { Write-Err '项目依赖更新失败（部分包可能不兼容）' }
@@ -825,7 +829,7 @@ function Portable-UpdateDeps {
         Write-Info '安装 CUDA 版 PyTorch...'
         $cudaArgs = @('-m', 'pip', 'install', '--no-deps') + $pipTarget + @(
             'torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', 'torchvision==0.21.0+cu124',
-            '--index-url', 'https://download.pytorch.org/whl/cu124'
+            '--index-url', $script:TorchIndex
         )
         & $pythonBin @cudaArgs
         if ($LASTEXITCODE -eq 0) { Write-Ok 'CUDA 版 PyTorch 已安装' }

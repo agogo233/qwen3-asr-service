@@ -140,11 +140,14 @@ asr-service/
 1. 安装依赖：`pip install -r requirements.txt`（含 torch==2.6.0 默认 CPU 版）
 2. **Windows + N 卡用户改装 CUDA 版**（wheel 内嵌 CUDA DLL，无需额外 nvidia pip 包）：
    ```powershell
-   pip install --no-deps torch==2.6.0+cu124 torchaudio==2.6.0+cu124 `
+   pip install --no-deps torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124 `
      --index-url https://download.pytorch.org/whl/cu124
    ```
 3. `pip install ffmpeg` 或确保系统 PATH 有 ffmpeg
 4. `python start.py` 或 `python -m app.main`
+
+> **国内镜像**：setup.ps1 / manage.ps1 已默认使用清华 PyPI（普通依赖）与阿里云 pytorch-wheels（torch cu124）加速。
+> 自定义镜像：设置环境变量 `$env:PIP_INDEX_URL`（PyPI 源）与 `$env:TORCH_INDEX_URL`（torch 源）后运行脚本即可覆盖。
 
 ## 配置详解
 
@@ -379,6 +382,7 @@ curl.exe -X DELETE http://127.0.0.1:8765/v2/speakers/<id> -H "Authorization: Bea
 | 依赖安装到错误位置 | `python312._pth` 未按自配便携步骤 3 修改（必须在 setup.ps1 之前） |
 | 服务起不来：CUDA 相关错误 | 驱动过旧 → 升级 ≥535；未装 VC++ 运行库 → 安装 vc_redist.x64.exe；torch 装成 CPU 版 → 按方式三重装 cu124 wheel |
 | 模型下载超时 | 网络问题 → 确认 `model_source: modelscope`；或手动下载模型放入缓存目录 |
+| 依赖/torch 下载慢或超时 | 脚本已默认国内镜像（清华 PyPI + 阿里云 pytorch-wheels）；可设 `$env:PIP_INDEX_URL` / `$env:TORCH_INDEX_URL` 自定义 |
 | WebUI 打不开 | 服务未就绪（等日志「就绪」）；端口被占 → 改 config `port`；防火墙拦截（本机访问一般无碍） |
 | 说话人页显示「需要 API Key」 | 右上角钥匙图标配置 `api_key`（与服务端一致）后刷新 |
 | 说话人页显示「声纹库未启用」 | 服务端需同时 `enable_speaker: true` + `enable_speaker_db: true` + `api_key` 非空；日志有 ERROR 说明原因 |
