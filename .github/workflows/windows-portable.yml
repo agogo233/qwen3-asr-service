@@ -1,0 +1,186 @@
+name: Windows Portable (AMD64 + CUDA)
+
+# 手动触发：构建 Windows AMD64 + CUDA cu124 便携打包。
+# 产物为 ZIP，含 Python 3.12 Embeddable + 全量依赖 + ffmpeg，
+# 解压至 asr-service/ 目录后运行 .\setup.ps1 即可启用。
+#
+# 注意：GitHub Release 单文件上限 2GB，本产物约 4-5GB，
+# 只能走 Actions Artifact（上限 10GB，保留 90 天）。
+#
+# 构建步骤说明：
+#   1. 清理 runner 工具缓存腾出磁盘空间
+#   2. 下载 Python 3.12.10 Embeddable amd64（3.12.11+ 不再发布 embed zip）
+#   3. 改写 _pth 启用 portable 模式（与 setup.ps1 Repair-EmbeddedPth 一致）
+#   4. 安装 pip 到 lib\site-packages
+#   5. 安装 CUDA PyTorch 全家桶（torch 2.6.0+cu124）
+#   6. 安装 requirements.txt 其余依赖（torch 已满足自动跳过）
+#   7. 下载 ffmpeg（bin\ffmpeg.exe + bin\ffprobe.exe）
+#   8. 冒烟验证：import torch/funasr/qwen_asr + pip check
+#   9. 7z 打包（排除 models/data/logs 等运行时目录）
+#  10. 清理源目录后上传 artifact
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-portable
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: asr-service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 1. 清理工具缓存 ──────────────────────────────────────────
+      - name: Free disk space
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cacheDir = 'C:\hostedtoolcache\windows'
+          if (Test-Path $cacheDir) {
+            $size = (Get-ChildItem $cacheDir -Recurse -Force -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+            Remove-Item -Recurse -Force $cacheDir -ErrorAction SilentlyContinue
+            Write-Host "Removed tool cache: $([math]::Round($size / 1GB, 2)) GB"
+          }
+          $disk = Get-PSDrive C
+          Write-Host "C: free $([math]::Round($disk.Free / 1GB, 1)) GB"
+
+      # ── 2. Python 3.12 Embeddable amd64 ──────────────────────────
+      - name: Set up Python 3.12 embeddable
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip'
+          Write-Host "Downloading Python 3.12.10 embeddable..."
+          curl.exe -fsSL -o python-embed.zip $url
+          if (-not (Test-Path python-embed.zip)) { throw "Python download failed" }
+          Expand-Archive -Path python-embed.zip -DestinationPath bin\python -Force
+          Remove-Item python-embed.zip
+          $ver = & bin\python\python.exe -V 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "Python.exe not working" }
+          Write-Host "Python: $ver"
+
+      # ── 3. 改写 _pth（与 setup.ps1 Repair-EmbeddedPth 一致） ────
+      - name: Fix _pth for portable mode
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pth = Get-ChildItem bin\python -Filter '*._pth' | Select-Object -First 1
+          if (-not $pth) { throw "_pth file not found" }
+          Copy-Item $pth.FullName "$($pth.FullName).bak" -Force
+          Set-Content -Path $pth.FullName -Value @(
+            'python312.zip',
+            '.',
+            '../../lib/site-packages',
+            'Lib\site-packages',
+            'import site'
+          ) -Encoding ASCII
+          $ver = & bin\python\python.exe -V 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "_pth rewrite broke Python interpreter" }
+          Write-Host "_pth rewritten and verified"
+
+      # ── 4. 安装 pip 到 lib\site-packages ──────────────────────────
+      - name: Install pip
+        run: |
+          $ErrorActionPreference = 'Stop'
+          curl.exe -fsSL -o bin\get-pip.py https://bootstrap.pypa.io/get-pip.py
+          if (-not (Test-Path bin\get-pip.py)) { throw "get-pip.py download failed" }
+          & bin\python\python.exe bin\get-pip.py --target lib\site-packages --index-url https://pypi.org/simple
+          if ($LASTEXITCODE -ne 0) { throw "pip installation failed" }
+          $ver = & bin\python\python.exe -m pip --version 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "pip not working" }
+          Write-Host "pip: $ver"
+
+      # ── 5. CUDA PyTorch（cu124） ─────────────────────────────────
+      - name: Install CUDA PyTorch
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & bin\python\python.exe -m pip install `
+            torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124 `
+            --index-url https://download.pytorch.org/whl/cu124 `
+            --target lib\site-packages --no-cache-dir
+          if ($LASTEXITCODE -ne 0) { throw "CUDA torch installation failed" }
+          $ver = & bin\python\python.exe -c "import torch; print(torch.__version__)" 2>&1
+          if ($LASTEXITCODE -ne 0 -or $ver -notlike '*+cu124*') {
+            throw "Torch version is not cu124: $ver"
+          }
+          Write-Host "torch: $ver"
+
+      # ── 6. 其余依赖 ──────────────────────────────────────────────
+      - name: Install remaining dependencies
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & bin\python\python.exe -m pip install -r requirements.txt `
+            --index-url https://pypi.org/simple `
+            --target lib\site-packages --no-cache-dir
+          if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
+          $ver = & bin\python\python.exe -c "import torch; print(torch.__version__)" 2>&1
+          if ($ver -notlike '*+cu124*') {
+            throw "Torch was downgraded to non-CUDA version: $ver"
+          }
+          Write-Host "All dependencies installed, torch still cu124: $ver"
+
+      # ── 7. ffmpeg（gyan.dev essentials） ─────────────────────────
+      - name: Download ffmpeg
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Downloading ffmpeg..."
+          curl.exe -fsSL -o ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+          if (-not (Test-Path ffmpeg.zip)) { throw "ffmpeg download failed" }
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-temp -Force
+          Remove-Item ffmpeg.zip
+          $ffmpegDir = Get-ChildItem ffmpeg-temp -Directory |
+            Where-Object Name -like 'ffmpeg-*' | Select-Object -First 1
+          if (-not $ffmpegDir) { throw "ffmpeg directory not found in archive" }
+          Copy-Item "$($ffmpegDir.FullName)\bin\ffmpeg.exe" bin\ffmpeg.exe
+          Copy-Item "$($ffmpegDir.FullName)\bin\ffprobe.exe" bin\ffprobe.exe
+          Remove-Item -Recurse -Force ffmpeg-temp
+          $ffVer = & bin\ffmpeg.exe -version 2>&1 | Select-Object -First 1
+          Write-Host "ffmpeg: $ffVer"
+
+      # ── 8. 冒烟验证 ──────────────────────────────────────────────
+      - name: Smoke test
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = & bin\python\python.exe -c 'import torch, funasr, qwen_asr; print("torch: " + torch.__version__); print("CUDA available: " + str(torch.cuda.is_available())); print("All imports OK")' 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "Import smoke test failed: $result" }
+          Write-Host $result
+          & bin\python\python.exe -m pip check
+          if ($LASTEXITCODE -ne 0) { throw "pip check failed" }
+          Write-Host "Smoke test passed"
+
+      # ── 9. 打包 ──────────────────────────────────────────────────
+      - name: Package
+        id: package
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          $zipName = "qwen3-asr-service-win-amd64-cu124-${sha}.zip"
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "zip_name=$zipName"
+          $7zExe = Get-Command '7z' -ErrorAction SilentlyContinue
+          $7z = if ($7zExe) { '7z' } else { 'C:\Program Files\7-Zip\7z.exe' }
+          & $7z a -mx=1 "..\$zipName" * `
+            -xr!models -xr!data -xr!logs -xr!venv -xr!dist -xr!bin\get-pip.py
+          if ($LASTEXITCODE -ne 0) { throw "7z compression failed" }
+          $size = (Get-Item "..\$zipName").Length / 1GB
+          Write-Host "Package: $zipName ($([math]::Round($size, 2)) GB)"
+
+      # ── 10. 清理源目录 + 上传 artifact ───────────────────────────
+      - name: Clean up source dirs
+        run: |
+          Remove-Item -Recurse -Force lib, bin -ErrorAction SilentlyContinue
+          $disk = Get-PSDrive C
+          Write-Host "C: free $([math]::Round($disk.Free / 1GB, 1)) GB"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.zip_name }}
+          path: ${{ github.workspace }}/${{ steps.package.outputs.zip_name }}
+          if-no-files-found: error
+          retention-days: 90
