@@ -169,8 +169,10 @@ function Install-PipIfNeeded {
     }
 }
 
-# 须在 Install-Dependencies（按 requirements.txt 装入 CPU 版 torch）之后调用：
-# GPU 环境下用 CUDA 版覆盖 requirements.txt 装入的 CPU 版 torch/torchaudio/torchvision。
+# 提前于 Install-Dependencies 调用：先检测 GPU，有 GPU 时通过 find-links 从 TorchIndex 镜像
+# 安装 CUDA 版 torch/torchaudio/torchvision（带依赖），使得后续 Install-Dependencies 中
+# requirements.txt 的 torch==2.6.0 约束被 2.6.0+cu124 满足而自动跳过，避免重复下载。
+# 无 GPU 或安装失败时返回 $false（Install-Dependencies 装全量 CPU 版兜底），已装 CUDA 版时跳过。
 function Install-PyTorch {
     Write-Host
     Write-Host '[INFO] Checking NVIDIA GPU...' -ForegroundColor Cyan
@@ -185,20 +187,25 @@ function Install-PyTorch {
     }
 
     if (-not $hasGpu) {
-        # CPU 版 torch/torchaudio/torchvision 已由 requirements.txt 安装，无需重复
         Write-Host '[WARN] No GPU detected, using CPU PyTorch from requirements.txt' -ForegroundColor Yellow
-        return
+        return $false
     }
 
-    # GPU：requirements.txt 中的 torch==2.6.0 被 pip 解析为 CPU 版，需替换为 CUDA 版。
-    # --target（便携）模式下 pip 既不会用 CUDA 版覆盖已存在的包，--force-reinstall 也不替换
-    # 包文件，必须先手动删除旧 torch 目录与 dist-info，再以 --no-deps 安装（与 manage.ps1 一致）。
+    # 跳过检查：已装 cu124 版 → 无需重装
+    $torchVer = & $script:PythonBin -c "import torch; print(torch.__version__)" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $torchVer -like '*+cu124*') {
+        Write-Host '[INFO] CUDA PyTorch already installed (' -NoNewline -ForegroundColor Cyan
+        Write-Host $torchVer.Trim() -NoNewline -ForegroundColor White
+        Write-Host '), skipping' -ForegroundColor Cyan
+        return $true
+    }
+
     Write-Host
     Write-Host '[INFO] Installing CUDA PyTorch (this may take several minutes)...' -ForegroundColor Cyan
 
     $isTarget = $script:PipTarget.Count -gt 0
     if ($isTarget) {
-        $sitePkgs = $script:PipTarget[1]
+        $sitePkgs = Join-Path $PSScriptRoot 'lib\site-packages'
         foreach ($item in @('torch', 'torchgen', 'torchaudio', 'torchvision')) {
             $dir = Join-Path $sitePkgs $item
             if (Test-Path $dir) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
@@ -208,24 +215,43 @@ function Install-PyTorch {
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # requirements.txt 已装好全部依赖，故 --no-deps 仅替换 torch 三件套；
-    # venv 模式（非 --target）pip 能正常替换，补 --force-reinstall 确保覆盖。
-    $pipArgs = @('-m', 'pip', 'install', '--no-deps')
-    if (-not $isTarget) { $pipArgs += '--force-reinstall' }
-    $pipArgs += $script:PipTarget + @(
+    # 带依赖安装 CUDA 三件套：torch 的纯 Python 依赖从 PypiIndex 解析，torch wheel
+    # 从 TorchIndex 的 find-links 获取（aliyun 平铺页面，非 PEP 503 标准 index）。
+    $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @(
         'torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', 'torchvision==0.21.0+cu124',
-        '--index-url', $script:TorchIndex
+        '--index-url', $script:PypiIndex, '--find-links', $script:TorchIndex
     )
 
     & $script:PythonBin @pipArgs
     if ($LASTEXITCODE -ne 0) {
-        Write-Host '[ERROR] PyTorch installation failed' -ForegroundColor Red
-        Read-Host 'Press Enter to exit'
-        exit 1
+        Write-Host
+        Write-Host '[WARN] CUDA PyTorch installation failed, falling back to CPU version' -ForegroundColor Yellow
+        # 回退清理：确保后续 Install-Dependencies 能装全量 CPU 版
+        if ($isTarget) {
+            foreach ($item in @('torch', 'torchgen', 'torchaudio', 'torchvision')) {
+                $dir = Join-Path $sitePkgs $item
+                if (Test-Path $dir) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
+            }
+            Get-ChildItem $sitePkgs -Directory -Filter 'torch*.dist-info' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^torch[a-z]*-\d' } |
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            & $script:PythonBin -m pip uninstall -y torch torchaudio torchvision 2>$null
+        }
+        return $false
     }
-    else {
-        Write-Host '[INFO] CUDA PyTorch installed' -ForegroundColor Green
+
+    Write-Host '[INFO] CUDA PyTorch installed' -ForegroundColor Green
+
+    # 装后自检：CUDA 可用性
+    $cudaOk = & $script:PythonBin -c "import torch; print(torch.cuda.is_available())" 2>$null
+    if ($cudaOk -notmatch 'True') {
+        Write-Host '[WARN] CUDA PyTorch is installed but torch.cuda.is_available() returns False.' -ForegroundColor Yellow
+        Write-Host '       This may indicate an outdated NVIDIA driver. Please update your driver.' -ForegroundColor Yellow
     }
+
+    return $true
 }
 
 function Install-Dependencies {
@@ -384,9 +410,11 @@ else {
 # --- Common setup (portable or venv) ---
 Repair-EmbeddedPth
 Install-PipIfNeeded
-# 先按 requirements.txt 装入 CPU 版 torch，再由 Install-PyTorch 在 GPU 环境下替换为 CUDA 版
+# 先由 Install-PyTorch 检测 GPU 并预装 CUDA 版 torch（find-links），
+# 再装其余依赖（CUDA 版 torch 已满足 requirements.txt 约束，自动跳过，不重复下载）
+# 返回值无需处理：失败时 Install-PyTorch 内部已回退清理，Install-Dependencies 装全量 CPU 版兜底
+$null = Install-PyTorch
 Install-Dependencies
-Install-PyTorch
 New-Directories
 Select-ModelSource
 Show-SetupComplete
