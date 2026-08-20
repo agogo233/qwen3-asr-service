@@ -78,7 +78,7 @@ function Initialize-Venv {
     }
 
     # Check version
-    $pyVer = & $sysPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+    $pyVer = & $sysPython -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>$null
     Write-Host "[INFO] Detected system Python version: $pyVer" -ForegroundColor Cyan
 
     if ($pyVer -ne '3.12') {
@@ -123,22 +123,36 @@ function Initialize-Venv {
 function Repair-EmbeddedPth {
     if ($script:PythonMode -ne 'portable') { return }
 
-    # 官方 Embeddable Python 默认注释 #import site，导致 pip 对 python -m pip 不可见
-    $pth = Get-ChildItem (Join-Path $PSScriptRoot 'bin\python') -Filter 'python3*._pth' -ErrorAction SilentlyContinue |
+    $pth = Get-ChildItem (Join-Path $PSScriptRoot 'bin\python') -Filter '*._pth' -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $pth) { return }
-    if (Select-String -Path $pth.FullName -Pattern '^import site$' -Quiet) { return }
 
-    Write-Host "[INFO] Enabling import site in $($pth.Name) (Embeddable Python)..." -ForegroundColor Cyan
     if (-not (Test-Path "$($pth.FullName).bak")) {
         Copy-Item $pth.FullName "$($pth.FullName).bak" -Force
     }
-    Set-Content -Path $pth.FullName -Value @('python312.zip', '.', '../../lib/site-packages', 'import site') -Encoding ASCII
+    Write-Host "[INFO] Ensuring import site in $($pth.Name) (Embeddable Python)..." -ForegroundColor Cyan
+    Set-Content -Path $pth.FullName -Value @('python312.zip', '.', '../../lib/site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
     Write-Host "[INFO] $($pth.Name) fixed" -ForegroundColor Green
+
+    # Verify interpreter still works
+    & $script:PythonBin -V 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '[ERROR] _pth rewrite broke Python interpreter; restoring backup' -ForegroundColor Red
+        Copy-Item "$($pth.FullName).bak" $pth.FullName -Force
+        Read-Host 'Press Enter to exit'
+        exit 1
+    }
 }
 
 function Install-PipIfNeeded {
     if ($script:PythonMode -ne 'portable') { return }
+
+    # Check pip via "python -m pip" first
+    & $script:PythonBin -m pip --version 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host '[INFO] pip already installed' -ForegroundColor Green
+        return
+    }
 
     # Ensure lib\site-packages exists
     $sitePkg = Join-Path $PSScriptRoot 'lib\site-packages'
@@ -147,26 +161,26 @@ function Install-PipIfNeeded {
         Write-Host '[INFO] Created lib\site-packages' -ForegroundColor Cyan
     }
 
-    # Check pip in portable
-    $pipExe = Join-Path $PSScriptRoot 'bin\python\Scripts\pip.exe'
-    if (-not (Test-Path $pipExe)) {
-        Write-Host '[INFO] Installing pip...' -ForegroundColor Cyan
-        $getPip = Join-Path $PSScriptRoot 'bin\get-pip.py'
-        if (-not (Test-Path $getPip)) {
-            Write-Host '[INFO] Downloading get-pip.py...' -ForegroundColor Cyan
-            Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $getPip
-        }
-        & $script:PythonBin $getPip --index-url $script:PypiIndex
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host '[ERROR] pip installation failed' -ForegroundColor Red
-            Read-Host 'Press Enter to exit'
-            exit 1
-        }
-        Write-Host '[INFO] pip installed' -ForegroundColor Green
+    Write-Host '[INFO] Installing pip...' -ForegroundColor Cyan
+    $getPip = Join-Path $PSScriptRoot 'bin\get-pip.py'
+    if (-not (Test-Path $getPip)) {
+        Write-Host '[INFO] Downloading get-pip.py...' -ForegroundColor Cyan
+        Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $getPip
     }
-    else {
-        Write-Host '[INFO] pip already installed' -ForegroundColor Green
+    if (-not (Test-Path $getPip)) {
+        Write-Host '[ERROR] Failed to download get-pip.py' -ForegroundColor Red
+        Write-Host '[ERROR] Please manually download from: https://bootstrap.pypa.io/get-pip.py' -ForegroundColor Red
+        Write-Host "[ERROR] Place the file at: $getPip" -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
+        exit 1
     }
+    & $script:PythonBin $getPip --target $sitePkg --index-url $script:PypiIndex
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '[ERROR] pip installation failed' -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
+        exit 1
+    }
+    Write-Host '[INFO] pip installed' -ForegroundColor Green
 }
 
 # 提前于 Install-Dependencies 调用：先检测 GPU，有 GPU 时通过 find-links 从 TorchIndex 镜像
@@ -352,6 +366,20 @@ function Show-SetupComplete {
     Write-Host '  Setup Complete' -ForegroundColor Green
     Write-Host '==========================================' -ForegroundColor Green
     Write-Host
+
+    # Self-check (portable mode only): verify torch and funasr importable
+    if ($script:PythonMode -eq 'portable') {
+        Write-Host '[INFO] Verifying installation...' -ForegroundColor Cyan
+        & $script:PythonBin -c "import torch, funasr; print(torch.__version__)" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host '[INFO] Installation verified: torch and funasr are importable' -ForegroundColor Green
+        }
+        else {
+            Write-Host '[WARN] Installation verification failed: torch or funasr not importable' -ForegroundColor Yellow
+        }
+        Write-Host
+    }
+
     Write-Host 'To start the service:'
     Write-Host "  .\start.ps1 --model-source $src" -ForegroundColor White
     Write-Host
@@ -371,15 +399,26 @@ Write-Host '==========================================' -ForegroundColor Cyan
 Write-Host
 
 # --- 1. Detect Python environment ---
-$portableDetected = (Test-Path 'bin\python\python.exe') -and (Test-Path 'lib\site-packages')
+$portableBin = Join-Path $PSScriptRoot 'bin\python\python.exe'
+$portableLib = Join-Path $PSScriptRoot 'lib\site-packages'
+$portableDetected = (Test-Path $portableBin) -and (Test-Path $portableLib)
 
 if ($portableDetected) {
-    Write-Host '[INFO] Portable Python environment detected, using portable mode' -ForegroundColor Cyan
-    $script:PythonMode = 'portable'
-    $script:PythonBin = Join-Path $PSScriptRoot 'bin\python\python.exe'
-    $script:PipTarget = @('--target', (Join-Path $PSScriptRoot 'lib\site-packages'))
+    # Verify python.exe is executable
+    & $portableBin -V 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host '[INFO] Portable Python environment detected, using portable mode' -ForegroundColor Cyan
+        $script:PythonMode = 'portable'
+        $script:PythonBin = $portableBin
+        $script:PipTarget = @('--target', (Join-Path $PSScriptRoot 'lib\site-packages'))
+    }
+    else {
+        Write-Host '[WARN] bin\python\python.exe exists but is not executable; falling back' -ForegroundColor Yellow
+        $portableDetected = $false
+    }
 }
-else {
+
+if (-not $portableDetected) {
     Write-Host
     Write-Host '[INFO] Portable Python environment not detected (bin + lib directories missing)'
     Write-Host

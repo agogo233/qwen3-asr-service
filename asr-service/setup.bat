@@ -19,11 +19,16 @@ set PYTHON_BIN=
 :: Check portable Python (bin\python + lib)
 if exist "bin\python\python.exe" (
     if exist "lib\site-packages" (
-        echo [INFO] Portable Python environment detected, using portable mode
-        set PYTHON_MODE=portable
-        set PYTHON_BIN=bin\python\python.exe
-        set PIP_TARGET=--target=lib\site-packages
-        goto :python_ready
+        bin\python\python.exe -V >nul 2>&1
+        if errorlevel 1 (
+            echo [WARN] bin\python\python.exe exists but is not executable; falling back
+        ) else (
+            echo [INFO] Portable Python environment detected, using portable mode
+            set PYTHON_MODE=portable
+            set PYTHON_BIN=bin\python\python.exe
+            set "PIP_TARGET=--target=lib\site-packages"
+            goto :python_ready
+        )
     )
 )
 
@@ -91,7 +96,7 @@ if "%SYS_PYTHON%"=="" (
 )
 
 :: Check version is 3.12
-for /f "tokens=*" %%v in ('%SYS_PYTHON% -c "import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")"') do set PY_VER=%%v
+for /f "tokens=*" %%v in ('%SYS_PYTHON% -c "import sys;print(chr(46).join(map(str,sys.version_info[:2])))"') do set PY_VER=%%v
 echo [INFO] Detected system Python version: %PY_VER%
 
 if not "%PY_VER%"=="3.12" (
@@ -126,7 +131,7 @@ echo [INFO] Creating virtual environment...
 call venv\Scripts\activate.bat
 set PYTHON_MODE=venv
 set PYTHON_BIN=venv\Scripts\python.exe
-set PIP_TARGET=
+set "PIP_TARGET="
 echo [INFO] venv virtual environment activated
 
 :: Upgrade pip in venv
@@ -143,34 +148,55 @@ if not exist "lib\site-packages" (
     )
 )
 
+:: Detect stray --target=* directories (from previous buggy runs)
+if exist "--target=lib" (
+    echo [WARN] Found stray directory: --target=lib
+    echo [WARN] This was likely created by an earlier buggy version.
+    echo [INFO] Run the following command to clean it up:
+    echo [INFO]   rd /s /q "--target=lib"
+)
+
 :: Fix Embeddable Python ._pth so pip is visible to "python -m pip"
 :: (official Embeddable package ships with "#import site" commented out)
 if "%PYTHON_MODE%"=="portable" (
-    for /f "delims=" %%F in ('dir /b "bin\python\python3*._pth" 2^>nul') do (
-        findstr /b /c:"import site" "bin\python\%%F" >nul
+    for /f "delims=" %%F in ('dir /b "bin\python\*._pth" 2^>nul') do (
+        if not exist "bin\python\%%F.bak" copy /y "bin\python\%%F" "bin\python\%%F.bak" >nul
+        echo [INFO] Ensuring import site in %%F ^(Embeddable Python^)...
+        > "bin\python\%%F" (
+            echo python312.zip
+            echo .
+            echo ..\..\lib\site-packages
+            echo Lib\site-packages
+            echo import site
+        )
+        echo [INFO] %%F fixed
+        %PYTHON_BIN% -V >nul 2>&1
         if errorlevel 1 (
-            echo [INFO] Enabling import site in %%F ^(Embeddable Python^)...
-            if not exist "bin\python\%%F.bak" copy /y "bin\python\%%F" "bin\python\%%F.bak" >nul
-            > "bin\python\%%F" (
-                echo %%~nF.zip
-                echo .
-                echo ..\..\lib\site-packages
-                echo import site
-            )
-            echo [INFO] %%F fixed
+            echo [ERROR] _pth rewrite broke Python interpreter; restoring backup
+            copy /y "bin\python\%%F.bak" "bin\python\%%F" >nul
+            pause
+            exit /b 1
         )
     )
 )
 
 :: Install pip for portable mode
 if "%PYTHON_MODE%"=="portable" (
-    if not exist "bin\python\Scripts\pip.exe" (
+    %PYTHON_BIN% -m pip --version >nul 2>&1
+    if errorlevel 1 (
         echo [INFO] Installing pip...
         if not exist "bin\get-pip.py" (
             echo [INFO] Downloading get-pip.py...
             powershell -Command "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile 'bin\get-pip.py'"
         )
-        bin\python\python.exe bin\get-pip.py --index-url %PIP_INDEX%
+        if not exist "bin\get-pip.py" (
+            echo [ERROR] Failed to download get-pip.py
+            echo [ERROR] Please manually download from: https://bootstrap.pypa.io/get-pip.py
+            echo [ERROR] Place the file at: %CD%\bin\get-pip.py
+            pause
+            exit /b 1
+        )
+        %PYTHON_BIN% bin\get-pip.py --target "lib\site-packages" --index-url %PIP_INDEX%
         if errorlevel 1 (
             echo [ERROR] pip installation failed
             pause
@@ -185,7 +211,10 @@ if "%PYTHON_MODE%"=="portable" (
 :: Verify pip is accessible via "python -m pip"
 %PYTHON_BIN% -m pip --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] pip is not available via "python -m pip"; check bin\python\python312._pth
+    echo [ERROR] pip is not available via "python -m pip"
+    echo [INFO] Current sys.path:
+    %PYTHON_BIN% -c "import sys; print('\n'.join(sys.path))"
+    echo [INFO] Check bin\python\*._pth for correct paths and 'import site'
     pause
     exit /b 1
 )
@@ -269,6 +298,10 @@ if "%HAS_GPU%"=="1" (
 )
 if errorlevel 1 (
     echo [ERROR] PyTorch installation failed
+    echo [INFO] CUDA wheels (torch==2.6.0+cu124) are fetched from:
+    echo [INFO]   %TORCH_INDEX%
+    echo [INFO] If this mirror is unreachable, set TORCH_INDEX_URL to a custom mirror,
+    echo [INFO] or run without GPU (CPU version will be installed automatically).
     pause
     exit /b 1
 )
@@ -284,6 +317,19 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [INFO] Dependencies installed
+
+:: 8. Self-check (portable mode only): verify torch and funasr importable
+if "%PYTHON_MODE%"=="portable" (
+    echo [INFO] Verifying installation...
+    %PYTHON_BIN% -c "import torch, funasr; print(torch.__version__)" >nul 2>&1
+    if errorlevel 1 (
+        echo [WARN] Installation verification failed: torch or funasr not importable
+        echo [INFO] Run: %PYTHON_BIN% -c "import torch, funasr; print(torch.__version__)"
+        echo [INFO] to diagnose missing dependencies
+    ) else (
+        echo [INFO] Installation verified: torch and funasr are importable
+    )
+)
 
 :end
 echo.
