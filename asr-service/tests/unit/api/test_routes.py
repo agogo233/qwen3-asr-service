@@ -192,6 +192,30 @@ def test_cancel(make_client, prev, expect_status):
     assert resp.json()["status"] == expect_status
 
 
+def test_submit_then_cancel_pending_removes_upload_file(make_client, tm_factory,
+                                                       monkeypatch, tmp_path):
+    """端到端：上传 → DELETE 取消 pending 任务 → 上传目录文件已清理。"""
+    import os
+
+    from app.runtime import task_manager as tm_module
+    up = tmp_path / "uploads"
+    up.mkdir()
+    monkeypatch.setattr("app.api.routes.UPLOADS_DIR", str(up))
+    monkeypatch.setattr(tm_module, "UPLOADS_DIR", str(up))
+
+    tm = tm_factory()
+    client = make_client(task_manager=tm)
+    resp = client.post("/v1/asr", files={"file": ("a.wav", b"abcdef", "audio/wav")})
+    assert resp.status_code == 200
+    tid = resp.json()["task_id"]
+    assert len(os.listdir(up)) == 1
+
+    resp = client.delete(f"/v1/tasks/{tid}")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+    assert len(os.listdir(up)) == 0
+
+
 # ─── health_check ───
 
 def test_health_ok(make_client):

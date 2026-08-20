@@ -134,6 +134,7 @@ MAX_QUEUE_SIZE = 100
 TASK_TIMEOUT = 1800             # 单任务超时 30 分钟（秒）
 TASK_RESULT_TTL = 3600          # 已完成任务保留时长（秒），默认 1 小时
 TASK_CLEANUP_INTERVAL = 300     # 清理扫描间隔（秒），默认 5 分钟
+TASK_ORPHAN_TTL = 86400         # 上传目录孤儿文件清扫阈值（秒），默认 24h；活跃任务（pending/processing）文件始终排除
 
 # ─── 兼容接口（/compat/*）───
 

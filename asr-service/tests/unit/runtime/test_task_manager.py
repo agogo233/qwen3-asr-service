@@ -3,6 +3,7 @@
 注入假 process_fn，不加载模型；超时用 monkeypatch 压缩。
 行为依源码确认（task_manager.py:41/64/69/92/98/125/130/187）。
 """
+import os
 import queue
 
 import pytest
@@ -144,6 +145,68 @@ def test_is_cancelled_unknown_false(tm_factory):
     assert tm.is_cancelled("nope") is False
 
 
+# ─── pending 取消的文件清理 ───
+
+def test_cancel_pending_removes_upload_file(tm_factory, monkeypatch, tmp_path):
+    from app.runtime import task_manager as tm_module
+    up = tmp_path / "uploads"
+    up.mkdir()
+    monkeypatch.setattr(tm_module, "UPLOADS_DIR", str(up))
+    file_path = up / "u1.wav"
+    file_path.write_bytes(b"audio")
+
+    tm = tm_factory()
+    tid = tm.submit(str(file_path))
+    prev = tm.cancel_task(tid)
+    assert prev == "pending"
+    assert tm.get_task(tid)["status"] == "cancelled"
+    assert not file_path.exists()
+
+
+def test_cancel_pending_missing_file_no_raise(tm_factory):
+    tm = tm_factory()
+    tid = tm.submit("/tmp/nonexistent.wav")
+    prev = tm.cancel_task(tid)  # 文件不存在 → 静默，不抛异常
+    assert prev == "pending"
+    assert tm.get_task(tid)["status"] == "cancelled"
+
+
+def test_cancel_pending_skips_external_path(tm_factory, monkeypatch, tmp_path):
+    # file_path 不在 UPLOADS_DIR 内 → 不删除（防御外部路径混入）
+    from app.runtime import task_manager as tm_module
+    up = tmp_path / "uploads"
+    up.mkdir()
+    monkeypatch.setattr(tm_module, "UPLOADS_DIR", str(up))
+    external = tmp_path / "external.wav"
+    external.write_bytes(b"audio")
+
+    tm = tm_factory()
+    tid = tm.submit(str(external))
+    tm.cancel_task(tid)
+    assert external.exists()
+
+
+def test_worker_skips_cancelled_pending_removes_file(tm_factory, monkeypatch, tmp_path):
+    # worker 取队列时任务已是 cancelled → 跳过分支兜底清理文件
+    from app.runtime import task_manager as tm_module
+    up = tmp_path / "uploads"
+    up.mkdir()
+    monkeypatch.setattr(tm_module, "UPLOADS_DIR", str(up))
+    processed = []
+    tm = tm_factory(start=False, processor=lambda task: processed.append(task["task_id"]))
+    file_path = up / "u1.wav"
+    file_path.write_bytes(b"audio")
+    tid = tm.submit(str(file_path))
+    tm.cancel_task(tid)                 # 层 1：pending 取消即删
+    file_path.write_bytes(b"audio")     # 重建 → 验证 worker 跳过分支也删（幂等兜底）
+    tm.start()
+    import time
+    time.sleep(0.3)
+    assert tm.get_task(tid)["status"] == "cancelled"
+    assert processed == []
+    assert not file_path.exists()
+
+
 # ─── is_stopping / shutdown ───
 
 def test_is_stopping_toggles_on_shutdown(tm_factory):
@@ -190,6 +253,49 @@ def test_worker_timeout(tm_factory, monkeypatch):
     tid = tm.submit("/tmp/a.wav")
     assert wait_for(lambda: tm.get_task(tid)["status"] == "failed", timeout=3.0)
     assert "超时" in tm.get_task(tid)["error"]
+
+
+def test_worker_timeout_sets_cancel_event(tm_factory, monkeypatch):
+    monkeypatch.setattr("app.runtime.task_manager.TASK_TIMEOUT", 0.3)
+
+    def slow(task):
+        import time
+        time.sleep(1.0)
+        return {"x": 1}
+
+    tm = tm_factory(start=True, processor=slow)
+    tid = tm.submit("/tmp/a.wav")
+    assert wait_for(lambda: tm.get_task(tid)["status"] == "failed", timeout=3.0)
+    assert tm.is_cancelled(tid) is True  # 协作取消事件已设置，pipeline 可在 chunk 边界自停
+
+
+def test_worker_timeout_does_not_block_next_task(tm_factory, monkeypatch):
+    """核心回归：首个任务「卡死」（不响应取消），超时后下一任务仍能在新线程上完成。
+
+    旧实现（单线程池）下超时任务占用唯一工作线程，任务 2 永远 pending 导致连环超时。
+    卡死线程仅随 is_stopping 退出，fixture shutdown 后无线程泄漏。
+    """
+    monkeypatch.setattr("app.runtime.task_manager.TASK_TIMEOUT", 0.3)
+
+    calls = []
+
+    def processor(task):
+        calls.append(task["task_id"])
+        if len(calls) == 1:
+            # 第一个任务卡死（不响应取消，模拟不可中断的推理）
+            import time
+            while not tm.is_stopping:
+                time.sleep(0.1)
+        return {"ok": True}
+
+    tm = tm_factory(start=True, processor=processor)
+    tid1 = tm.submit("/tmp/a.wav")
+    assert wait_for(lambda: tm.get_task(tid1)["status"] == "failed", timeout=3.0)
+    assert "超时" in tm.get_task(tid1)["error"]
+
+    tid2 = tm.submit("/tmp/b.wav")
+    assert wait_for(lambda: tm.get_task(tid2)["status"] == "completed", timeout=3.0)
+    assert tm.get_task(tid2)["result"] == {"ok": True}
 
 
 def test_worker_skips_cancelled_pending(tm_factory):
@@ -323,3 +429,33 @@ def test_wait_done_pops_done_event_on_cleanup(tm_factory):
     assert wait_for(lambda: tm.get_task(tid)["status"] == "completed")
     # _done_events 与 _cancel_events 一样在 submit 登记
     assert tid in tm._done_events
+
+
+# ─── 上传目录孤儿清扫 ───
+
+def test_cleanup_orphan_uploads_removes_old_only(tm_factory, monkeypatch, tmp_path):
+    from app.runtime import task_manager as tm_module
+    import time as _time
+    up = tmp_path / "uploads"
+    up.mkdir()
+    monkeypatch.setattr(tm_module, "UPLOADS_DIR", str(up))
+    monkeypatch.setattr(tm_module, "TASK_ORPHAN_TTL", 100)
+
+    old = up / "old.wav"
+    old.write_bytes(b"x")
+    os.utime(str(old), (_time.time() - 200, _time.time() - 200))  # 超阈值
+
+    fresh = up / "fresh.wav"
+    fresh.write_bytes(b"x")                                       # 新文件不删
+
+    tm = tm_factory()
+    live = up / "live.wav"
+    live.write_bytes(b"x")
+    tid = tm.submit(str(live))                                    # pending 活跃任务文件不删
+
+    tm._cleanup_orphan_uploads()
+
+    assert not old.exists()
+    assert fresh.exists()
+    assert live.exists()
+    assert tm.get_task(tid)["status"] == "pending"
