@@ -136,7 +136,7 @@ echo [INFO] venv virtual environment activated
 
 :: Upgrade pip in venv
 echo [INFO] Upgrading pip...
-%PYTHON_BIN% -m pip install --upgrade pip --index-url %PIP_INDEX%
+%PYTHON_BIN% -m pip install --upgrade pip --index-url %PIP_INDEX% --retries 5 --timeout 120
 goto :python_ready
 
 :python_ready
@@ -187,7 +187,7 @@ if "%PYTHON_MODE%"=="portable" (
         echo [INFO] Installing pip...
         if not exist "bin\get-pip.py" (
             echo [INFO] Downloading get-pip.py...
-            powershell -Command "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile 'bin\get-pip.py'"
+            powershell -Command "Invoke-WebRequest -Uri 'https://pypi.tuna.tsinghua.edu.cn/get-pip.py' -OutFile 'bin\get-pip.py'"
         )
         if not exist "bin\get-pip.py" (
             echo [ERROR] Failed to download get-pip.py
@@ -196,7 +196,7 @@ if "%PYTHON_MODE%"=="portable" (
             pause
             exit /b 1
         )
-        %PYTHON_BIN% bin\get-pip.py --target "lib\site-packages" --index-url %PIP_INDEX%
+        %PYTHON_BIN% bin\get-pip.py --target "lib\site-packages" --index-url %PIP_INDEX% --retries 5 --timeout 120
         if errorlevel 1 (
             echo [ERROR] pip installation failed
             pause
@@ -288,29 +288,53 @@ if "%MODEL_CHOICE%"=="1" (
     echo [INFO] Invalid option, using ModelScope
 )
 
-:: 6. Install PyTorch
+:: 6. Skip PyTorch if already installed (portable mode — CI 预装 cu124 免重下)
+if "%PYTHON_MODE%"=="portable" (
+    echo [DEBUG] PYTHON_BIN=%PYTHON_BIN%
+    echo [DEBUG] Checking torch version...
+    %PYTHON_BIN% -c "import torch; print(torch.__version__); exit(0 if '+cu124' in torch.__version__ else 1)"
+    if not errorlevel 1 (
+        echo [INFO] CUDA PyTorch already installed, skipping
+        goto :skip_torch
+    ) else (
+        echo [INFO] Proceeding to install PyTorch (not found or not cu124)
+    )
+)
+
+:: 7. Install PyTorch
 echo.
 echo [INFO] Installing PyTorch 2.6.0 (this may take several minutes)...
+
+:: pip cache directory for faster reinstallation
+set "PIP_CACHE_DIR=%CD%\.pip_cache"
+if not exist "!PIP_CACHE_DIR!" mkdir "!PIP_CACHE_DIR!" 2>nul
+
+set TORCH_OK=0
 if "%HAS_GPU%"=="1" (
-    %PYTHON_BIN% -m pip install %PIP_TARGET% torch==2.6.0+cu124 torchaudio==2.6.0+cu124 --index-url %PIP_INDEX% --find-links %TORCH_INDEX%
+    set "PIP_TORCH_ARGS=torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124"
 ) else (
-    %PYTHON_BIN% -m pip install %PIP_TARGET% torch torchaudio --index-url %PIP_INDEX% --find-links %TORCH_INDEX%
+    set "PIP_TORCH_ARGS=torch torchaudio torchvision"
 )
-if errorlevel 1 (
+for %%M in ("%TORCH_INDEX%" "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cu124" "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cpu") do (
+    if not "!TORCH_OK!"=="1" (
+        echo [INFO] Trying PyTorch mirror: %%~M
+        %PYTHON_BIN% -m pip install !PIP_TARGET! !PIP_TORCH_ARGS! --index-url %PIP_INDEX% --find-links "%%~M" --retries 5 --timeout 120
+        if not errorlevel 1 set TORCH_OK=1
+    )
+)
+if not "!TORCH_OK!"=="1" (
     echo [ERROR] PyTorch installation failed
-    echo [INFO] CUDA wheels (torch==2.6.0+cu124) are fetched from:
-    echo [INFO]   %TORCH_INDEX%
-    echo [INFO] If this mirror is unreachable, set TORCH_INDEX_URL to a custom mirror,
-    echo [INFO] or run without GPU (CPU version will be installed automatically).
+    echo [INFO] Tried all configured mirrors. If network is blocked, set TORCH_INDEX_URL to a custom mirror.
     pause
     exit /b 1
 )
 echo [INFO] PyTorch installed
 
-:: 7. Install other dependencies
+:skip_torch
+:: 8. Install other dependencies
 echo.
 echo [INFO] Installing project dependencies...
-%PYTHON_BIN% -m pip install %PIP_TARGET% -r requirements.txt --index-url %PIP_INDEX%
+%PYTHON_BIN% -m pip install %PIP_TARGET% -r requirements.txt --index-url %PIP_INDEX% --retries 5 --timeout 120
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed
     pause
@@ -318,7 +342,19 @@ if errorlevel 1 (
 )
 echo [INFO] Dependencies installed
 
-:: 8. Self-check (portable mode only): verify torch and funasr importable
+:: 9. Assert torch is still CUDA (防 requirements.txt 降级)
+if "%PYTHON_MODE%"=="portable" (
+    %PYTHON_BIN% -c "import torch; exit(0 if '+cu124' in torch.__version__ else 1)" 2>nul
+    if not errorlevel 1 (
+        echo [INFO] CUDA PyTorch confirmed
+    ) else (
+        echo [WARN] torch was downgraded to non-CUDA version after dependency install
+        echo [INFO] Expected: torch.__version__ containing '+cu124'
+        %PYTHON_BIN% -c "import torch; print('Actual: ' + torch.__version__)"
+    )
+)
+
+:: 10. Self-check (portable mode only): verify torch and funasr importable
 if "%PYTHON_MODE%"=="portable" (
     echo [INFO] Verifying installation...
     %PYTHON_BIN% -c "import torch, funasr; print(torch.__version__)" >nul 2>&1

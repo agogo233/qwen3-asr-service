@@ -201,7 +201,12 @@ function Install-PyTorch {
     }
 
     if (-not $hasGpu) {
-        Write-Host '[WARN] No GPU detected, using CPU PyTorch from requirements.txt' -ForegroundColor Yellow
+        Write-Host '[WARN] No GPU detected, installing CPU PyTorch' -ForegroundColor Yellow
+        $cpuArgs = @('-m', 'pip', 'install') + $script:PipTarget + @(
+            'torch', 'torchaudio', 'torchvision',
+            '--index-url', $script:PypiIndex
+        )
+        & $script:PythonBin @cpuArgs
         return $false
     }
 
@@ -240,7 +245,7 @@ function Install-PyTorch {
     if ($LASTEXITCODE -ne 0) {
         Write-Host
         Write-Host '[WARN] CUDA PyTorch installation failed, falling back to CPU version' -ForegroundColor Yellow
-        # 回退清理：确保后续 Install-Dependencies 能装全量 CPU 版
+        # 回退清理
         if ($isTarget) {
             foreach ($item in @('torch', 'torchgen', 'torchaudio', 'torchvision')) {
                 $dir = Join-Path $sitePkgs $item
@@ -253,6 +258,12 @@ function Install-PyTorch {
         else {
             & $script:PythonBin -m pip uninstall -y torch torchaudio torchvision 2>$null
         }
+        Write-Host '[INFO] Installing CPU PyTorch as fallback...' -ForegroundColor Yellow
+        $cpuArgs = @('-m', 'pip', 'install') + $script:PipTarget + @(
+            'torch', 'torchaudio', 'torchvision',
+            '--index-url', $script:PypiIndex
+        )
+        & $script:PythonBin @cpuArgs
         return $false
     }
 
@@ -283,6 +294,17 @@ function Install-Dependencies {
         Write-Host '[ERROR] Dependency installation failed' -ForegroundColor Red
         Read-Host 'Press Enter to exit'
         exit 1
+    }
+
+    if ($script:PythonMode -eq 'portable') {
+        $torchVer = & $script:PythonBin -c "import torch; print(torch.__version__)" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $torchVer -like '*+cu124*') {
+            Write-Host '[INFO] CUDA PyTorch confirmed' -ForegroundColor Green
+        } else {
+            Write-Host '[WARN] torch was downgraded to non-CUDA version after dependency install' -ForegroundColor Yellow
+            Write-Host "[INFO] Expected: torch.__version__ containing '+cu124'" -ForegroundColor Yellow
+            Write-Host "[INFO] Actual: $torchVer" -ForegroundColor Yellow
+        }
     }
 }
 
@@ -449,9 +471,9 @@ if (-not $portableDetected) {
 # --- Common setup (portable or venv) ---
 Repair-EmbeddedPth
 Install-PipIfNeeded
-# 先由 Install-PyTorch 检测 GPU 并预装 CUDA 版 torch（find-links），
-# 再装其余依赖（CUDA 版 torch 已满足 requirements.txt 约束，自动跳过，不重复下载）
-# 返回值无需处理：失败时 Install-PyTorch 内部已回退清理，Install-Dependencies 装全量 CPU 版兜底
+# 先由 Install-PyTorch 检测 GPU 并安装 GPU 或 CPU 版 torch（find-links for CUDA / PyPI for CPU），
+# 再装其余依赖（torch/torchaudio/torchvision 已装，自动跳过，不重复下载）
+# 返回值无需处理：失败时 Install-PyTorch 内部已回退并安装 CPU 版兜底
 $null = Install-PyTorch
 Install-Dependencies
 New-Directories
