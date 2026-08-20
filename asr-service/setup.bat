@@ -146,20 +146,18 @@ if not exist "lib\site-packages" (
 :: Fix Embeddable Python ._pth so pip is visible to "python -m pip"
 :: (official Embeddable package ships with "#import site" commented out)
 if "%PYTHON_MODE%"=="portable" (
-    for %%F in ("bin\python\python3*._pth") do (
-        if exist "%%F" (
-            findstr /b /c:"import site" "%%F" >nul
-            if errorlevel 1 (
-                echo [INFO] Enabling import site in %%~nxF ^(Embeddable Python^)...
-                if not exist "%%F.bak" copy /y "%%F" "%%F.bak" >nul
-                > "%%F" (
-                    echo python312.zip
-                    echo .
-                    echo ..\..\lib\site-packages
-                    echo import site
-                )
-                echo [INFO] %%~nxF fixed
+    for /f "delims=" %%F in ('dir /b "bin\python\python3*._pth" 2^>nul') do (
+        findstr /b /c:"import site" "bin\python\%%F" >nul
+        if errorlevel 1 (
+            echo [INFO] Enabling import site in %%F ^(Embeddable Python^)...
+            if not exist "bin\python\%%F.bak" copy /y "bin\python\%%F" "bin\python\%%F.bak" >nul
+            > "bin\python\%%F" (
+                echo %%~nF.zip
+                echo .
+                echo ..\..\lib\site-packages
+                echo import site
             )
+            echo [INFO] %%F fixed
         )
     )
 )
@@ -183,6 +181,15 @@ if "%PYTHON_MODE%"=="portable" (
         echo [INFO] pip already installed
     )
 )
+
+:: Verify pip is accessible via "python -m pip"
+%PYTHON_BIN% -m pip --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] pip is not available via "python -m pip"; check bin\python\python312._pth
+    pause
+    exit /b 1
+)
+echo [INFO] pip is ready
 
 :: 4. Check CUDA
 echo.
@@ -256,9 +263,9 @@ if "%MODEL_CHOICE%"=="1" (
 echo.
 echo [INFO] Installing PyTorch 2.6.0 (this may take several minutes)...
 if "%HAS_GPU%"=="1" (
-    %PYTHON_BIN% -m pip install %PIP_TARGET% torch==2.6.0+cu124 torchaudio==2.6.0+cu124 --index-url %TORCH_INDEX%
+    %PYTHON_BIN% -m pip install %PIP_TARGET% torch==2.6.0+cu124 torchaudio==2.6.0+cu124 --index-url %PIP_INDEX% --find-links %TORCH_INDEX%
 ) else (
-    %PYTHON_BIN% -m pip install %PIP_TARGET% torch torchaudio --index-url %TORCH_INDEX%
+    %PYTHON_BIN% -m pip install %PIP_TARGET% torch torchaudio --index-url %PIP_INDEX% --find-links %TORCH_INDEX%
 )
 if errorlevel 1 (
     echo [ERROR] PyTorch installation failed
