@@ -5,7 +5,7 @@ name: Windows Portable (AMD64 + CUDA)
 # 解压至 asr-service/ 目录后运行 .\setup.ps1 即可启用。
 #
 # 注意：GitHub Release 单文件上限 2GB，本产物约 4-5GB，
-# 只能走 Actions Artifact（上限 10GB，保留 90 天）。
+# 只能走 Actions Artifact（上限 10GB，保留 1 天）。
 #
 # 构建步骤说明：
 #   1. 清理 runner 工具缓存腾出磁盘空间
@@ -20,7 +20,8 @@ name: Windows Portable (AMD64 + CUDA)
 #   8.6 WebUI 启动冒烟：start.ps1 --web --device cpu 真实启动，轮询 /web-ui 与 /v2/health
 #       （inputs.skip_webui_smoke=true 可跳过本步）
 #   9. 7z 打包（排除 models/data/logs 等运行时目录与 __pycache__；.pip_cache 打包前删除）
-#  10. 清理源目录后上传 artifact
+#  10. 清理源目录后上传 artifact（保留 1 天）
+#  11. 清理 >1 天的全部历史 runs（失败不阻塞构建结论）
 
 on:
   workflow_dispatch:
@@ -29,6 +30,10 @@ on:
         description: '跳过 8.6 WebUI 启动冒烟（网络抖动偶发红时的兜底开关；8.5 脚本链路验证仍执行）'
         type: boolean
         default: false
+
+permissions:
+  contents: read   # checkout 所需
+  actions: write   # 末尾清理 step 删除 >1 天的历史 runs 所需
 
 concurrency:
   group: windows-portable
@@ -300,4 +305,27 @@ jobs:
           name: ${{ steps.package.outputs.zip_name }}
           path: ${{ github.workspace }}/${{ steps.package.outputs.zip_name }}
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 1
+
+      # ── 11. 清理 >1 天的历史 runs ────────────────────────────────
+      # 随构建顺带清理全部 workflows 的旧 runs；continue-on-error 使清理
+      # 失败（如权限被仓库策略拦截）不影响本次构建结论。
+      # gh run delete 成功时无输出，须以 $LASTEXITCODE 判定成败
+      - name: Cleanup old runs
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cutoff = (Get-Date).ToUniversalTime().AddDays(-1).ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $runs = gh run list --limit 1000 --json databaseId,createdAt,status | ConvertFrom-Json
+          $old = @($runs | Where-Object { $_.createdAt -lt $cutoff -and $_.status -notin 'in_progress', 'queued' })
+          Write-Host "Found $($old.Count) run(s) created before $cutoff"
+          $failed = 0
+          foreach ($r in $old) {
+            gh run delete $r.databaseId 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Host "deleted run $($r.databaseId)" }
+            else { $failed++; Write-Host "skip run $($r.databaseId) (delete failed, exit $LASTEXITCODE)" }
+          }
+          if ($failed -gt 0) { Write-Host "::warning::$failed run(s) failed to delete" }
