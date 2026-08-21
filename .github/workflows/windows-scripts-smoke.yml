@@ -140,6 +140,13 @@ jobs:
 
       - name: Smoke start.bat --help
         run: |
+          echo [DIAG] === python312._pth ===
+          type bin\python\python312._pth
+          echo [DIAG] === sys.path / flags ===
+          bin\python\python.exe -c "import sys; print('isolated:', sys.flags.isolated); print('executable:', sys.executable); [print(repr(p)) for p in sys.path]"
+          echo [DIAG] === direct import app ===
+          bin\python\python.exe -c "import app; print('app ok:', app.__file__)"
+          echo [DIAG] === end diag ===
           call start.bat --help < nul > start_out.txt 2>&1
           if errorlevel 1 (type start_out.txt & exit /b 1)
           findstr /c:"usage:" start_out.txt >nul || (type start_out.txt & exit /b 1)
