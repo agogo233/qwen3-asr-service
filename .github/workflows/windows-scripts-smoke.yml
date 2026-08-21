@@ -169,7 +169,8 @@ jobs:
         run: |
           ren bin bin.hidden
           call start.bat < nul > neg_out.txt 2>&1
+          set RC=%errorlevel%
           ren bin.hidden bin
-          if not errorlevel 1 (type neg_out.txt & exit /b 1)
+          if not "%RC%"=="1" (type neg_out.txt & exit /b 1)
           findstr /c:"No Python environment detected" neg_out.txt >nul || (type neg_out.txt & exit /b 1)
           echo [OK] negative case passed
