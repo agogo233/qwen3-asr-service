@@ -1,0 +1,168 @@
+name: Windows Scripts Smoke
+
+# 轻量冒烟：验证 setup.bat / setup.ps1 / start.bat / start.ps1 在 portable 场景下的关键路径。
+#
+# 不安装真实 torch/全量依赖，控制时长在分钟级：
+#   - 假 torch 桩（__version__='2.6.0+cu124'）使 cu124 探测通过
+#   - ASR_SETUP_SKIP_INSTALL=1 跳过 torch 与 requirements 安装（setup.bat/setup.ps1 内置钩子）
+#   - 深版 --help 冒烟仅安装 fastapi/uvicorn/pyyaml（app.main --help 路径的顶层依赖），
+#     守住 Embeddable Python _pth 隔离模式导致的 "No module named 'app'" 回归点
+#
+# consistency job：_pth 模板四处副本一致性 + actionlint（Linux 即可跑）
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'asr-service/setup.bat'
+      - 'asr-service/setup.ps1'
+      - 'asr-service/start.bat'
+      - 'asr-service/start.ps1'
+      - 'manage.ps1'
+      - '.github/workflows/windows-portable.yml'
+      - 'asr-service/tests/unit/scripts/**'
+      - '.github/workflows/windows-scripts-smoke.yml'
+  pull_request:
+    paths:
+      - 'asr-service/setup.bat'
+      - 'asr-service/setup.ps1'
+      - 'asr-service/start.bat'
+      - 'asr-service/start.ps1'
+      - 'manage.ps1'
+      - '.github/workflows/windows-portable.yml'
+      - 'asr-service/tests/unit/scripts/**'
+      - '.github/workflows/windows-scripts-smoke.yml'
+
+concurrency:
+  group: windows-scripts-smoke
+  cancel-in-progress: true
+
+jobs:
+  consistency:
+    name: pth-template-consistency + actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      # --noconftest：跳过 tests/conftest.py（numpy 等运行期依赖与本纯文本测试无关）
+      # -o addopts= 覆盖 pytest.ini 的 --cov=app（本 job 不装 pytest-cov）
+      - name: Run _pth template consistency test
+        run: python -m pytest asr-service/tests/unit/scripts/test_pth_template_consistency.py -v --noconftest -o addopts=""
+
+      - name: actionlint
+        run: |
+          curl -fsSL -o actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar xzf actionlint.tar.gz actionlint
+          ./actionlint -color
+
+  smoke:
+    name: portable smoke (bat + ps1)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: cmd
+        working-directory: asr-service
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 模拟便携包：Embeddable Python + lib\site-packages + 假 torch 桩 ──
+      - name: Prepare fake portable environment
+        shell: pwsh
+        working-directory: asr-service
+        run: |
+          $ErrorActionPreference = 'Stop'
+          curl.exe -fsSL -o py-embed.zip https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip
+          if (-not (Test-Path py-embed.zip)) { throw "python embeddable download failed" }
+          Expand-Archive -Path py-embed.zip -DestinationPath bin\python -Force
+          Remove-Item py-embed.zip
+          New-Item -ItemType Directory -Force lib\site-packages | Out-Null
+          New-Item -ItemType Directory -Force lib\site-packages\torch | Out-Null
+          Set-Content -Path lib\site-packages\torch\__init__.py -Value "__version__ = '2.6.0+cu124'" -Encoding ASCII
+          # 金标准文件：bat 写反斜杠变体，ps1 写正斜杠变体（语义等价、字节不同）
+          Set-Content -Path pth_golden_bat.txt -Value @('python312.zip', '.', '..\..', '..\..\lib\site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
+          Set-Content -Path pth_golden_ps1.txt -Value @('python312.zip', '.', '../..', '../../lib/site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
+          $ver = & bin\python\python.exe -V 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "embeddable python not working" }
+          Write-Host "Prepared: $ver"
+
+      # ── setup.bat portable 全路径（跳过重依赖安装） ──
+      - name: Smoke setup.bat (portable path)
+        env:
+          ASR_SETUP_SKIP_INSTALL: '1'
+          PIP_INDEX_URL: https://pypi.org/simple
+        run: |
+          setup.bat < nul > bat_out.txt 2>&1
+          if errorlevel 1 exit /b 1
+          findstr /i /c:"using portable mode" bat_out.txt >nul || exit /b 1
+          findstr /c:"--model-source modelscope" bat_out.txt >nul || exit /b 1
+          fc pth_golden_bat.txt bin\python\python312._pth >nul || exit /b 1
+          if not exist "bin\python\python312._pth.bak" exit /b 1
+          bin\python\python.exe -m pip --version >nul || exit /b 1
+          echo [OK] setup.bat portable path passed
+
+      # ── setup.ps1 同场景（从 .bak 还原模拟新包） ──
+      - name: Smoke setup.ps1 (portable path)
+        shell: pwsh
+        working-directory: asr-service
+        env:
+          ASR_SETUP_SKIP_INSTALL: '1'
+          PIP_INDEX_URL: https://pypi.org/simple
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item bin\python\python312._pth.bak bin\python\python312._pth -Force
+          cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 < nul > ps1_out.txt 2>&1"
+          if ($LASTEXITCODE -ne 0) { Get-Content ps1_out.txt; throw "setup.ps1 failed" }
+          $out = Get-Content ps1_out.txt -Raw
+          if ($out -notmatch 'using portable mode') { throw "portable detection missing" }
+          if ($out -notmatch '--model-source modelscope') { throw "model-source hint missing (B1 regression?)" }
+          $golden = Get-Content pth_golden_ps1.txt
+          $actual = Get-Content bin\python\python312._pth
+          if (($golden -join "`n") -ne ($actual -join "`n")) { throw "_pth mismatch:$([Environment]::NewLine)$($actual -join [Environment]::NewLine)" }
+          & bin\python\python.exe -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "pip not available after setup.ps1" }
+          Write-Host "[OK] setup.ps1 portable path passed"
+
+      # ── 深版 --help 冒烟：仅装轻依赖即可走通 app.main 参数解析 ──
+      - name: Install light deps for help smoke
+        run: |
+          bin\python\python.exe -m pip install fastapi uvicorn pyyaml --index-url https://pypi.org/simple --retries 5 --timeout 120
+          if errorlevel 1 exit /b 1
+
+      - name: Smoke start.bat --help
+        run: |
+          start.bat --help < nul > start_out.txt 2>&1
+          if errorlevel 1 exit /b 1
+          findstr /c:"usage:" start_out.txt >nul || exit /b 1
+          findstr /i /c:"Using portable Python" start_out.txt >nul || exit /b 1
+          echo [OK] start.bat --help passed
+
+      - name: Smoke start.ps1 --help
+        shell: pwsh
+        working-directory: asr-service
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File start.ps1 --help < nul > startps_out.txt 2>&1"
+          if ($LASTEXITCODE -ne 0) { Get-Content startps_out.txt; throw "start.ps1 --help failed" }
+          $out = Get-Content startps_out.txt -Raw
+          if ($out -notmatch 'usage:') { throw "usage text missing" }
+          Write-Host "[OK] start.ps1 --help passed"
+
+      # ── 反向用例：无任何环境时 start.bat 必须报错退出 ──
+      - name: Negative - start.bat without any environment
+        run: |
+          ren bin bin.hidden
+          start.bat < nul > neg_out.txt 2>&1
+          ren bin.hidden bin
+          if not errorlevel 1 exit /b 1
+          findstr /c:"No Python environment detected" neg_out.txt >nul || exit /b 1
+          echo [OK] negative case passed

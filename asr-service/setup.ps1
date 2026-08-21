@@ -471,11 +471,14 @@ if (-not $portableDetected) {
 # --- Common setup (portable or venv) ---
 Repair-EmbeddedPth
 Install-PipIfNeeded
-# 先由 Install-PyTorch 检测 GPU 并安装 GPU 或 CPU 版 torch（find-links for CUDA / PyPI for CPU），
-# 再装其余依赖（torch/torchaudio/torchvision 已装，自动跳过，不重复下载）
-# 返回值无需处理：失败时 Install-PyTorch 内部已回退并安装 CPU 版兜底
-$null = Install-PyTorch
-Install-Dependencies
+# ASR_SETUP_SKIP_INSTALL=1 skips PyTorch/dependency installation (CI smoke-test hook)
+if (-not $env:ASR_SETUP_SKIP_INSTALL) {
+    # 先由 Install-PyTorch 检测 GPU 并安装 GPU 或 CPU 版 torch（find-links for CUDA / PyPI for CPU），
+    # 再装其余依赖（torch/torchaudio/torchvision 已装，自动跳过，不重复下载）
+    # 返回值无需处理：失败时 Install-PyTorch 内部已回退并安装 CPU 版兜底
+    $null = Install-PyTorch
+    Install-Dependencies
+}
 New-Directories
 Select-ModelSource
 Show-SetupComplete

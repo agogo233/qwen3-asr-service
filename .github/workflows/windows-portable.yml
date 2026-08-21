@@ -16,7 +16,7 @@ name: Windows Portable (AMD64 + CUDA)
 #   6. 安装 requirements.txt 其余依赖（torch 已满足自动跳过）
 #   7. 下载 ffmpeg（bin\ffmpeg.exe + bin\ffprobe.exe）
 #   8. 冒烟验证：import torch/funasr/qwen_asr + pip check
-#   9. 7z 打包（排除 models/data/logs 等运行时目录）
+#   9. 7z 打包（排除 models/data/logs/.pip_cache 等运行时目录）
 #  10. 清理源目录后上传 artifact
 
 on:
@@ -182,7 +182,7 @@ jobs:
           $7zExe = Get-Command '7z' -ErrorAction SilentlyContinue
           $7z = if ($7zExe) { '7z' } else { 'C:\Program Files\7-Zip\7z.exe' }
           & $7z a -mx=1 "..\$zipName" * `
-            -xr!models -xr!data -xr!logs -xr!venv -xr!dist -xr!bin\get-pip.py
+            -xr!models -xr!data -xr!logs -xr!venv -xr!dist -xr!.pip_cache -xr!bin\get-pip.py
           if ($LASTEXITCODE -ne 0) { throw "7z compression failed" }
           $size = (Get-Item "..\$zipName").Length / 1GB
           Write-Host "Package: $zipName ($([math]::Round($size, 2)) GB)"

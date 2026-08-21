@@ -253,56 +253,11 @@ if %errorlevel%==0 (
     )
 )
 
-:: 5. Model source selection
-echo.
-echo ==========================================
-echo   Model Configuration
-echo ==========================================
-echo.
-echo Select model source:
-echo   1) ModelScope (recommended for China)
-echo   2) HuggingFace
-echo   3) Manual (skip download)
-echo.
-set /p MODEL_CHOICE="Enter choice [1/2/3] (default 1): "
-if "%MODEL_CHOICE%"=="" set MODEL_CHOICE=1
+:: CI smoke-test hook: skip PyTorch/dependency installation (see windows-scripts-smoke.yml)
+if defined ASR_SETUP_SKIP_INSTALL goto :model_select
 
-if "%MODEL_CHOICE%"=="1" (
-    set MODEL_SOURCE=modelscope
-    echo [INFO] Selected ModelScope
-) else if "%MODEL_CHOICE%"=="2" (
-    set MODEL_SOURCE=huggingface
-    echo [INFO] Selected HuggingFace
-) else if "%MODEL_CHOICE%"=="3" (
-    set MODEL_SOURCE=manual
-    echo [INFO] Selected manual mode
-    echo.
-    echo ==========================================
-    echo   Manual Model Placement Guide
-    echo ==========================================
-    echo.
-    echo Place model files in these directories:
-    echo.
-    echo   ASR 0.6B: %CD%\models\asr\0.6b\
-    echo   ASR 1.7B: %CD%\models\asr\1.7b\
-    echo   Align:    %CD%\models\align\0.6b\
-    echo   VAD:      %CD%\models\vad\fsmn\
-    echo   Punc:     %CD%\models\punc\ct-transformer\
-    echo.
-    echo Download from:
-    echo   https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B
-    echo   https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B
-    echo.
-    goto :end
-) else (
-    set MODEL_SOURCE=modelscope
-    echo [INFO] Invalid option, using ModelScope
-)
-
-:: 6. Skip PyTorch if already installed (portable mode — CI 预装 cu124 免重下)
+:: 5. Skip PyTorch if already installed (portable mode — CI 预装 cu124 免重下)
 if "%PYTHON_MODE%"=="portable" (
-    echo [DEBUG] PYTHON_BIN=%PYTHON_BIN%
-    echo [DEBUG] Checking torch version...
     %PYTHON_BIN% -c "import torch; print(torch.__version__); exit(0 if '+cu124' in torch.__version__ else 1)"
     if not errorlevel 1 (
         echo [INFO] CUDA PyTorch already installed, skipping
@@ -312,7 +267,7 @@ if "%PYTHON_MODE%"=="portable" (
     )
 )
 
-:: 7. Install PyTorch
+:: 6. Install PyTorch
 echo.
 echo [INFO] Installing PyTorch 2.6.0 (this may take several minutes)...
 
@@ -357,7 +312,7 @@ if not "!TORCH_OK!"=="1" (
 echo [INFO] PyTorch installed
 
 :skip_torch
-:: 8. Install other dependencies
+:: 7. Install other dependencies
 echo.
 echo [INFO] Installing project dependencies...
 
@@ -371,7 +326,7 @@ if errorlevel 1 (
 )
 echo [INFO] Dependencies installed
 
-:: 9. Assert torch is still CUDA (防 requirements.txt 降级)
+:: 8. Assert torch is still CUDA (防 requirements.txt 降级)
 if "%PYTHON_MODE%"=="portable" (
     %PYTHON_BIN% -c "import torch; exit(0 if '+cu124' in torch.__version__ else 1)" 2>nul
     if not errorlevel 1 (
@@ -383,7 +338,7 @@ if "%PYTHON_MODE%"=="portable" (
     )
 )
 
-:: 10. Self-check (portable mode only): verify torch and funasr importable
+:: 9. Self-check (portable mode only): verify torch and funasr importable
 if "%PYTHON_MODE%"=="portable" (
     echo [INFO] Verifying installation...
     %PYTHON_BIN% -c "import torch, funasr; print(torch.__version__)" >nul 2>&1
@@ -394,6 +349,53 @@ if "%PYTHON_MODE%"=="portable" (
     ) else (
         echo [INFO] Installation verified: torch and funasr are importable
     )
+)
+
+:: 10. Model source selection (after installs so every path reaches it;
+:: manual only skips model download, not dependency install — aligned with setup.ps1)
+:model_select
+echo.
+echo ==========================================
+echo   Model Configuration
+echo ==========================================
+echo.
+echo Select model source:
+echo   1) ModelScope (recommended for China)
+echo   2) HuggingFace
+echo   3) Manual (skip download)
+echo.
+set /p MODEL_CHOICE="Enter choice [1/2/3] (default 1): "
+if "%MODEL_CHOICE%"=="" set MODEL_CHOICE=1
+
+if "%MODEL_CHOICE%"=="1" (
+    set MODEL_SOURCE=modelscope
+    echo [INFO] Selected ModelScope
+) else if "%MODEL_CHOICE%"=="2" (
+    set MODEL_SOURCE=huggingface
+    echo [INFO] Selected HuggingFace
+) else if "%MODEL_CHOICE%"=="3" (
+    set MODEL_SOURCE=manual
+    echo [INFO] Selected manual mode
+    echo.
+    echo ==========================================
+    echo   Manual Model Placement Guide
+    echo ==========================================
+    echo.
+    echo Place model files in these directories:
+    echo.
+    echo   ASR 0.6B: %CD%\models\asr\0.6b\
+    echo   ASR 1.7B: %CD%\models\asr\1.7b\
+    echo   Align:    %CD%\models\align\0.6b\
+    echo   VAD:      %CD%\models\vad\fsmn\
+    echo   Punc:     %CD%\models\punc\ct-transformer\
+    echo.
+    echo Download from:
+    echo   https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B
+    echo   https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B
+    echo.
+) else (
+    set MODEL_SOURCE=modelscope
+    echo [INFO] Invalid option, using ModelScope
 )
 
 :end
