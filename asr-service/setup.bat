@@ -26,7 +26,7 @@ if exist "bin\python\python.exe" (
             echo [INFO] Portable Python environment detected, using portable mode
             set PYTHON_MODE=portable
             set PYTHON_BIN=bin\python\python.exe
-            set "PIP_TARGET=--target=lib\site-packages"
+            set "PIP_TGT_ARGS=--target=lib\site-packages"
             goto :python_ready
         )
     )
@@ -83,7 +83,7 @@ if %errorlevel%==0 (
     set SYS_PYTHON=python
 ) else (
     where python3 >nul 2>&1
-    if %errorlevel%==0 (
+    if not errorlevel 1 (
         set SYS_PYTHON=python3
     )
 )
@@ -91,6 +91,16 @@ if %errorlevel%==0 (
 if "%SYS_PYTHON%"=="" (
     echo [ERROR] System Python not found. Please install Python 3.12 first
     echo [ERROR] Download: https://www.python.org/downloads/
+    pause
+    exit /b 1
+)
+
+:: Verify it is a real interpreter (rejects the Windows Store alias stub)
+%SYS_PYTHON% -V >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] %SYS_PYTHON% is not a working Python interpreter
+    echo [ERROR] It may be the Windows Store alias stub. Install real Python 3.12 from:
+    echo [ERROR] https://www.python.org/downloads/
     pause
     exit /b 1
 )
@@ -131,7 +141,7 @@ echo [INFO] Creating virtual environment...
 call venv\Scripts\activate.bat
 set PYTHON_MODE=venv
 set PYTHON_BIN=venv\Scripts\python.exe
-set "PIP_TARGET="
+set "PIP_TGT_ARGS="
 echo [INFO] venv virtual environment activated
 
 :: Upgrade pip in venv
@@ -165,6 +175,7 @@ if "%PYTHON_MODE%"=="portable" (
         > "bin\python\%%F" (
             echo python312.zip
             echo .
+            echo ..\..
             echo ..\..\lib\site-packages
             echo Lib\site-packages
             echo import site
@@ -187,7 +198,7 @@ if "%PYTHON_MODE%"=="portable" (
         echo [INFO] Installing pip...
         if not exist "bin\get-pip.py" (
             echo [INFO] Downloading get-pip.py...
-            powershell -Command "Invoke-WebRequest -Uri 'https://pypi.tuna.tsinghua.edu.cn/get-pip.py' -OutFile 'bin\get-pip.py'"
+            powershell -Command "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile 'bin\get-pip.py'"
         )
         if not exist "bin\get-pip.py" (
             echo [ERROR] Failed to download get-pip.py
@@ -295,7 +306,6 @@ if "%PYTHON_MODE%"=="portable" (
     %PYTHON_BIN% -c "import torch; print(torch.__version__); exit(0 if '+cu124' in torch.__version__ else 1)"
     if not errorlevel 1 (
         echo [INFO] CUDA PyTorch already installed, skipping
-        goto :skip_torch
     ) else (
         echo [INFO] Proceeding to install PyTorch (not found or not cu124)
     )
@@ -304,6 +314,20 @@ if "%PYTHON_MODE%"=="portable" (
 :: 7. Install PyTorch
 echo.
 echo [INFO] Installing PyTorch 2.6.0 (this may take several minutes)...
+
+:: Portable mode: remove mixed/corrupt torch before reinstall (--target overlays without uninstalling)
+if "%PYTHON_MODE%"=="portable" (
+    for %%P in (torch torchaudio torchvision functorch) do (
+        if exist "lib\site-packages\%%P" (
+            echo [INFO] Removing existing %%P installation...
+            rmdir /s /q "lib\site-packages\%%P"
+        )
+    )
+    for /d %%D in ("lib\site-packages\torch*") do (
+        echo [INFO] Removing %%~nxD metadata...
+        rmdir /s /q "%%D"
+    )
+)
 
 :: pip cache directory for faster reinstallation
 set "PIP_CACHE_DIR=%CD%\.pip_cache"
@@ -318,7 +342,7 @@ if "%HAS_GPU%"=="1" (
 for %%M in ("%TORCH_INDEX%" "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cu124" "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cpu") do (
     if not "!TORCH_OK!"=="1" (
         echo [INFO] Trying PyTorch mirror: %%~M
-        %PYTHON_BIN% -m pip install !PIP_TARGET! !PIP_TORCH_ARGS! --index-url %PIP_INDEX% --find-links "%%~M" --retries 5 --timeout 120
+        %PYTHON_BIN% -m pip install !PIP_TGT_ARGS! !PIP_TORCH_ARGS! --index-url %PIP_INDEX% --find-links "%%~M" --retries 5 --timeout 120
         if not errorlevel 1 set TORCH_OK=1
     )
 )
@@ -330,11 +354,24 @@ if not "!TORCH_OK!"=="1" (
 )
 echo [INFO] PyTorch installed
 
-:skip_torch
 :: 8. Install other dependencies
 echo.
 echo [INFO] Installing project dependencies...
-%PYTHON_BIN% -m pip install %PIP_TARGET% -r requirements.txt --index-url %PIP_INDEX% --retries 5 --timeout 120
+
+:: GPU portable mode: pin torch to cu124 via constraints to prevent requirements.txt from downgrading
+set "PIP_CONSTRAINT="
+if "%HAS_GPU%"=="1" (
+    > "pip-constraints-cu124.txt" (
+        echo torch==2.6.0+cu124
+        echo torchaudio==2.6.0+cu124
+        echo torchvision==0.21.0+cu124
+    )
+    set "PIP_CONSTRAINT=-c pip-constraints-cu124.txt"
+    echo [INFO] Constraints applied to keep CUDA PyTorch pinned
+) else (
+    if exist "pip-constraints-cu124.txt" del /q "pip-constraints-cu124.txt"
+)
+%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% !PIP_CONSTRAINT! -r requirements.txt --index-url %PIP_INDEX% --retries 5 --timeout 120
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed
     pause

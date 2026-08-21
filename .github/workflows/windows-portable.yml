@@ -76,6 +76,7 @@ jobs:
           Set-Content -Path $pth.FullName -Value @(
             'python312.zip',
             '.',
+            '../..',
             '../../lib/site-packages',
             'Lib\site-packages',
             'import site'

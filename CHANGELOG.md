@@ -3,6 +3,13 @@
 本项目所有重要变更记录于此。版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)，
 发布版本号经由 git tag（去掉 `v` 前缀）注入镜像 `APP_VERSION`，体现在 `/openapi.json` 的 `info.version`。
 
+## [Unreleased]
+
+### 修复
+- **Windows portable 模式下 `start.bat` 报 `No module named 'app'`**：Embeddable Python 的 `python312._pth` 开启隔离模式后忽略 `PYTHONPATH`，且 `-m` 不再把当前目录加入 `sys.path`。在全部 4 处 `_pth` 写入模板中增加 `..\..`（相对 `bin\python\` 指向项目根），使 `app` 包可导入；覆盖 setup.bat / setup.ps1 / manage.ps1 / CI windows-portable.yml。
+- **torch 安装混合 CPU/CUDA 文件导致循环导入崩溃**：`--target` 安装不卸载旧文件，残留的混合文件会导致 `cannot import name 'data' from partially initialized module 'torch.utils'`。在步骤 7 装 cu124 前清理 `lib\site-packages\torch*`、`torchaudio*`、`torchvision*`、`functorch` 相关目录，确保全新安装。
+- **requirements 步骤偶发把 CUDA torch 降级为 CPU 版**：新增 `pip-constraints-cu124.txt`（GPU 模式自动生成），pin `torch==2.6.0+cu124` 等三件套，防止依赖解析意外拉回 CPU 版。同步更新 .gitignore 与 troubleshooting 文档。
+
 ## [2.4.1] - 2026-07-24
 
 离线 ASR 推理批大小可配置。

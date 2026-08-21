@@ -117,10 +117,11 @@ asr-service/
 1. 下载 **Python 3.12**（勿用 3.13，PyTorch 2.6.0 无对应 wheel）Windows embeddable 包
    → https://www.python.org/downloads/windows/
 2. 解压，将目录改名为 `python`，整体放入 `asr-service\bin\`
-3. `python312._pth` 无需手动处理：**setup.ps1 / setup.bat 会自动检查并修复**（备份原文件为 `.bak`，写入以下 4 行，同时解决 pip 可见性与依赖路径）：
+3. `python312._pth` 无需手动处理：**setup.ps1 / setup.bat 会自动检查并修复**（备份原文件为 `.bak`，写入以下 5 行，同时解决 pip 可见性、依赖路径与 `app` 模块导入）：
    ```
    python312.zip
    .
+   ../..
    ../../lib/site-packages
    import site
    ```
@@ -131,7 +132,7 @@ asr-service/
 7. 运行 `.\setup.ps1` 或 `setup.bat`（内部用 `bin\python\python.exe -m pip` 安装依赖；pip 安装、依赖、torch 均默认走国内镜像）
 8. 若便携 Python 无 pip，脚本会用 `bin\get-pip.py` 兜底安装（同样走清华镜像）
 
-> 注意：若手动编辑过 `python312._pth`，请保持上述 4 行结构；`import site` 必须启用且 `../../lib/site-packages` 必须存在，否则 pip 不可见或运行时找不到依赖。
+> 注意：若手动编辑过 `python312._pth`，请保持上述 5 行结构；`import site` 必须启用、`../../lib/site-packages` 必须存在（否则 pip 不可见），且 `../..` 必须存在（否则 `start.bat` 报 `No module named 'app'`）。
 
 ### 方式三：系统 Python（已有完整环境）
 
@@ -380,11 +381,11 @@ curl.exe -X DELETE http://127.0.0.1:8765/v2/speakers/<id> -H "Authorization: Bea
 |------|-----------|
 | 运行 ps1 报 `SecurityError` / `UnauthorizedAccess`（无法加载脚本·未签名） | 执行策略限制 → `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`（一次即可），或临时用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1`；或直接用 `setup.bat`（不受策略限制） |
 | 运行 ps1 报 `ParserError` / `UnexpectedToken "}"` | 文件被破坏或编码被编辑器转换（如保存成 UTF-16/全角引号）→ 从仓库重新下载原始文件覆盖，勿用记事本保存 ps1 |
-| `python.exe -m pip` 报 `No module named pip` | Embeddable Python 的 `python312._pth` 未启用 `import site`（get-pip 虽装成功但 pip 不可见）→ 新版 setup.ps1/setup.bat 会自动修复（备份 `.bak` 后写入 4 行） |
+| `python.exe -m pip` 报 `No module named pip` | Embeddable Python 的 `python312._pth` 未启用 `import site`（get-pip 虽装成功但 pip 不可见）→ 新版 setup.ps1/setup.bat 会自动修复（备份 `.bak` 后写入 5 行） |
 | `setup.bat` 第一行报 `'锘緻echo off' 不是内部或外部命令` | 旧版 bat 带 UTF-8 BOM → 使用新版 `setup.bat`（已去 BOM） |
 | `setup.bat` 显示 Setup Complete 但依赖没装上 | 旧版 bat 无错误检查 → 使用新版（torch/依赖失败会提示并退出） |
 | 启动报错找不到 python.exe | `bin\python\python.exe` 与 `lib\site-packages` 缺失或位置不对（见自配便携步骤 2/4） |
-| 依赖安装到错误位置 | `python312._pth` 未启用 `import site` 或缺少 `../../lib/site-packages` 行（脚本会自动修复；手动修改须保持 4 行结构） |
+| 依赖安装到错误位置 | `python312._pth` 未启用 `import site` 或缺少 `../../lib/site-packages` 行（脚本会自动修复；手动修改须保持 5 行结构） |
 | 服务起不来：CUDA 相关错误 | 驱动过旧 → 升级 ≥535；未装 VC++ 运行库 → 安装 vc_redist.x64.exe；torch 装成 CPU 版 → 按方式三重装 cu124 wheel |
 | 模型下载超时 | 网络问题 → 确认 `model_source: modelscope`；或手动下载模型放入缓存目录 |
 | 依赖/torch 下载慢或超时 | 脚本已默认国内镜像（清华 PyPI + 阿里云 pytorch-wheels）；可设 `$env:PIP_INDEX_URL` / `$env:TORCH_INDEX_URL` 自定义 |
