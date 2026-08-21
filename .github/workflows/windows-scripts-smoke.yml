@@ -89,8 +89,8 @@ jobs:
           New-Item -ItemType Directory -Force lib\site-packages\torch | Out-Null
           Set-Content -Path lib\site-packages\torch\__init__.py -Value "__version__ = '2.6.0+cu124'" -Encoding ASCII
           # 金标准文件：bat 写反斜杠变体，ps1 写正斜杠变体（语义等价、字节不同）
-          Set-Content -Path pth_golden_bat.txt -Value @('python312.zip', '.', '..\..', '..\..\lib\site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
-          Set-Content -Path pth_golden_ps1.txt -Value @('python312.zip', '.', '../..', '../../lib/site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
+          Set-Content -Path pth_golden_bat.txt -Value @('python312.zip', '.', '..\..', '..\..\..', '..\..\lib\site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
+          Set-Content -Path pth_golden_ps1.txt -Value @('python312.zip', '.', '../..', '../../..', '../../lib/site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
           $ver = & bin\python\python.exe -V 2>&1
           if ($LASTEXITCODE -ne 0) { throw "embeddable python not working" }
           Write-Host "Prepared: $ver"

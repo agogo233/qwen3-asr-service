@@ -18,6 +18,7 @@ GOLDEN = [
     "python312.zip",
     ".",
     "../..",
+    "../../..",
     "../../lib/site-packages",
     "Lib/site-packages",
     "import site",

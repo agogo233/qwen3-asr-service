@@ -131,7 +131,7 @@ function Repair-EmbeddedPth {
         Copy-Item $pth.FullName "$($pth.FullName).bak" -Force
     }
     Write-Host "[INFO] Ensuring import site in $($pth.Name) (Embeddable Python)..." -ForegroundColor Cyan
-    Set-Content -Path $pth.FullName -Value @('python312.zip', '.', '../..', '../../lib/site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
+    Set-Content -Path $pth.FullName -Value @('python312.zip', '.', '../..', '../../..', '../../lib/site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
     Write-Host "[INFO] $($pth.Name) fixed" -ForegroundColor Green
 
     # Verify interpreter still works

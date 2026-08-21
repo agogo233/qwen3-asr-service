@@ -772,7 +772,7 @@ function Portable-UpdateDeps {
     # 修复 Embeddable Python 的 _pth（确保 import site 启用，pip 可见且依赖可导入）
     $pthFile = Get-ChildItem (Join-Path $ServiceDir 'bin\python') -Filter 'python3*._pth' -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($pthFile -and -not (Select-String -Path $pthFile.FullName -Pattern '^import site$' -Quiet)) {
-        Set-Content -Path $pthFile.FullName -Value @('python312.zip', '.', '../..', '../../lib/site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
+        Set-Content -Path $pthFile.FullName -Value @('python312.zip', '.', '../..', '../../..', '../../lib/site-packages', 'Lib\site-packages', 'import site') -Encoding ASCII
     }
 
     # Step 1: Upgrade pip

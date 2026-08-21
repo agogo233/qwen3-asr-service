@@ -176,6 +176,7 @@ if "%PYTHON_MODE%"=="portable" (
             echo python312.zip
             echo .
             echo ..\..
+            echo ..\..\..
             echo ..\..\lib\site-packages
             echo Lib\site-packages
             echo import site
