@@ -140,10 +140,10 @@ jobs:
 
       - name: Smoke start.bat --help
         run: |
-          start.bat --help < nul > start_out.txt 2>&1
-          if errorlevel 1 exit /b 1
-          findstr /c:"usage:" start_out.txt >nul || exit /b 1
-          findstr /i /c:"Using portable Python" start_out.txt >nul || exit /b 1
+          call start.bat --help < nul > start_out.txt 2>&1
+          if errorlevel 1 (type start_out.txt & exit /b 1)
+          findstr /c:"usage:" start_out.txt >nul || (type start_out.txt & exit /b 1)
+          findstr /i /c:"Using portable Python" start_out.txt >nul || (type start_out.txt & exit /b 1)
           echo [OK] start.bat --help passed
 
       - name: Smoke start.ps1 --help
@@ -161,8 +161,8 @@ jobs:
       - name: Negative - start.bat without any environment
         run: |
           ren bin bin.hidden
-          start.bat < nul > neg_out.txt 2>&1
+          call start.bat < nul > neg_out.txt 2>&1
           ren bin.hidden bin
-          if not errorlevel 1 exit /b 1
-          findstr /c:"No Python environment detected" neg_out.txt >nul || exit /b 1
+          if not errorlevel 1 (type neg_out.txt & exit /b 1)
+          findstr /c:"No Python environment detected" neg_out.txt >nul || (type neg_out.txt & exit /b 1)
           echo [OK] negative case passed

@@ -5,6 +5,9 @@ cd /d "%~dp0"
 
 set "PYTHONPATH=%~dp0"
 set "PATH=%~dp0bin;%~dp0bin\python;%PATH%"
+:: UTF-8 mode: redirected/piped stdout uses ANSI codepage on Windows Python (<3.15),
+:: which crashes on non-ASCII help/log output; force UTF-8 for deterministic output
+set "PYTHONUTF8=1"
 
 :: Detect Python environment: portable first, then venv
 set PYTHON_BIN=

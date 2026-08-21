@@ -21,6 +21,9 @@ Set-Location $PSScriptRoot
 
 $env:PYTHONPATH = $PSScriptRoot
 $env:PATH = "$PSScriptRoot\bin;$PSScriptRoot\bin\python;$($env:PATH)"
+# UTF-8 mode: redirected/piped stdout uses ANSI codepage on Windows Python (<3.15),
+# which crashes on non-ASCII help/log output; force UTF-8 for deterministic output
+$env:PYTHONUTF8 = '1'
 
 $pythonBin = $null
 
