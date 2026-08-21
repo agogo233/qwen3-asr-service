@@ -16,11 +16,19 @@ name: Windows Portable (AMD64 + CUDA)
 #   6. 安装 requirements.txt 其余依赖（先过滤 torch 三件套行，防 CPU 版重复下载）
 #   7. 下载 ffmpeg（bin\ffmpeg.exe + bin\ffprobe.exe）
 #   8. 冒烟验证：import torch/funasr/qwen_asr + pip check
-#   9. 7z 打包（排除 models/data/logs 等运行时目录；.pip_cache 打包前删除）
+#   8.5 脚本链路验证：构建目录上跑 setup.ps1(SKIP_INSTALL)/start.ps1 --help/import app.main
+#   8.6 WebUI 启动冒烟：start.ps1 --web --device cpu 真实启动，轮询 /web-ui 与 /v2/health
+#       （inputs.skip_webui_smoke=true 可跳过本步）
+#   9. 7z 打包（排除 models/data/logs 等运行时目录与 __pycache__；.pip_cache 打包前删除）
 #  10. 清理源目录后上传 artifact
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_webui_smoke:
+        description: '跳过 8.6 WebUI 启动冒烟（网络抖动偶发红时的兜底开关；8.5 脚本链路验证仍执行）'
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-portable
@@ -179,6 +187,84 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "pip check failed" }
           Write-Host "Smoke test passed"
 
+      # ── 8.5 脚本链路验证（构建目录即交付形态；PS5.1 兼容路径一并守住）──
+      # setup.ps1 对已构建目录幂等：pip 已装跳过、_pth 重写内容与步骤 3 一致、
+      # Select-ModelSource 仅内存变量无持久化（stdin=nul 默认 modelscope）
+      - name: Verify scripts on built tree
+        env:
+          ASR_SETUP_SKIP_INSTALL: '1'
+          PIP_INDEX_URL: https://pypi.org/simple
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # <nul 输入重定向仅 cmd 支持（pwsh 无 < 运算符），经 cmd /c 包装；
+          # 输出落 RUNNER_TEMP，避免残留在打包目录
+          $setupOut = Join-Path $env:RUNNER_TEMP 'setup_out.txt'
+          cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 < nul > `"$setupOut`" 2>&1"
+          if ($LASTEXITCODE -ne 0) { Get-Content $setupOut; throw "setup.ps1 failed on built tree" }
+          $out = Get-Content $setupOut -Raw
+          if ($out -notmatch 'using portable mode') { throw "portable detection missing" }
+          & bin\python\python.exe -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "pip not available after setup.ps1" }
+          Write-Host "[OK] setup.ps1 passed on built tree"
+
+          $helpOut = Join-Path $env:RUNNER_TEMP 'help_out.txt'
+          cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File start.ps1 --help < nul > `"$helpOut`" 2>&1"
+          if ($LASTEXITCODE -ne 0) { Get-Content $helpOut; throw "start.ps1 --help failed" }
+          if ((Get-Content $helpOut -Raw) -notmatch 'usage:') { throw "usage text missing" }
+          Write-Host "[OK] start.ps1 --help passed"
+
+          & bin\python\python.exe -c 'import app.main; from app.web.views import ASSETS_DIR; import os; assert os.path.isdir(ASSETS_DIR), "web assets missing"'
+          if ($LASTEXITCODE -ne 0) { throw "import smoke failed" }
+          Write-Host "[OK] app.main + web assets importable"
+
+      # ── 8.6 WebUI 启动冒烟：真实拉起服务并断言 HTTP 响应 ──────────
+      # 经 start.ps1 启动（bin\ 前置 PATH 使 check_ffmpeg 可达 ffmpeg；_pth 使 -m app.main 可达）。
+      # CPU/OpenVINO 链路：HF 下载 INT8 模型（数百 MB）+ ModelScope VAD 小模型，预算 12 分钟。
+      # 模型/logs/data 均落已被打包排除的目录；taskkill /T 清进程树防孤儿 python 锁 lib。
+      - name: WebUI startup smoke
+        if: ${{ inputs.skip_webui_smoke != true }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $svcOut = Join-Path $env:RUNNER_TEMP 'svc-out.log'
+          $svcErr = Join-Path $env:RUNNER_TEMP 'svc-err.log'
+          $proc = Start-Process powershell -PassThru -WindowStyle Hidden `
+            -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','start.ps1',`
+              '--web','--device','cpu','--host','127.0.0.1','--port','18080' `
+            -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 144; $i++) {
+              Start-Sleep -Seconds 5
+              if ($proc.HasExited) { break }
+              try {
+                $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 'http://127.0.0.1:18080/web-ui'
+                if ($r.StatusCode -eq 200 -and $r.Content -like '*<div id="app">*') { $ok = $true; break }
+              } catch { }
+              if ($i % 6 -eq 5) {
+                Write-Host "--- svc log tail (t=$($i * 5)s) ---"
+                Get-Content $svcOut -Tail 15 -ErrorAction SilentlyContinue
+              }
+            }
+            if (-not $ok) {
+              Write-Host '=== svc-out.log ==='; Get-Content $svcOut -ErrorAction SilentlyContinue
+              Write-Host '=== svc-err.log ==='; Get-Content $svcErr -ErrorAction SilentlyContinue
+              throw "WebUI did not become ready within timeout (or service exited early)"
+            }
+            try {
+              $h = Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 'http://127.0.0.1:18080/v2/health'
+              if ($h.StatusCode -ne 200) { throw "health returned $($h.StatusCode)" }
+              Write-Host "[OK] WebUI started and responding; health: $($h.Content)"
+            } catch {
+              Write-Host '=== svc-out.log ==='; Get-Content $svcOut -ErrorAction SilentlyContinue
+              Write-Host '=== svc-err.log ==='; Get-Content $svcErr -ErrorAction SilentlyContinue
+              throw "health check failed: $_"
+            }
+          }
+          finally {
+            if ($proc) { taskkill /PID $proc.Id /T /F 2>$null }
+            Start-Sleep -Seconds 2
+          }
+
       # ── 9. 打包 ──────────────────────────────────────────────────
       - name: Package
         id: package
@@ -190,11 +276,13 @@ jobs:
           # .pip_cache 用删除而非 -xr! 排除：7-Zip 26.02 对点开头掩码报
           # "Too short switch"；且 CI 构建中该目录本不存在（缓存指向 runner.temp），
           # 删除仅防御本地跑过 setup.bat 后手动打包的场景
+          # __pycache__ 全局排除：8.5/8.6 运行产生的字节码不进包（site-packages 已有
+          # pyc 一并排除，用户首启自动重编译，体积略减）
           Remove-Item -Recurse -Force .pip_cache -ErrorAction SilentlyContinue
           $7zExe = Get-Command '7z' -ErrorAction SilentlyContinue
           $7z = if ($7zExe) { '7z' } else { 'C:\Program Files\7-Zip\7z.exe' }
           & $7z a -mx=1 "..\$zipName" * `
-            -xr!models -xr!data -xr!logs -xr!venv -xr!dist -xr!bin\get-pip.py
+            -xr!models -xr!data -xr!logs -xr!venv -xr!dist -xr!bin\get-pip.py -xr!__pycache__
           if ($LASTEXITCODE -ne 0) { throw "7z compression failed" }
           $size = (Get-Item "..\$zipName").Length / 1GB
           Write-Host "Package: $zipName ($([math]::Round($size, 2)) GB)"
