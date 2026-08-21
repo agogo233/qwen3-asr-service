@@ -339,7 +339,7 @@ set TORCH_OK=0
 if "%HAS_GPU%"=="1" (
     set "PIP_TORCH_ARGS=torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124"
 ) else (
-    set "PIP_TORCH_ARGS=torch torchaudio torchvision"
+    set "PIP_TORCH_ARGS=torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0"
 )
 for %%M in ("%TORCH_INDEX%" "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cu124" "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cpu") do (
     if not "!TORCH_OK!"=="1" (
@@ -361,20 +361,9 @@ echo [INFO] PyTorch installed
 echo.
 echo [INFO] Installing project dependencies...
 
-:: GPU portable mode: pin torch to cu124 via constraints to prevent requirements.txt from downgrading
-set "PIP_CONSTRAINT="
-if "%HAS_GPU%"=="1" (
-    > "pip-constraints-cu124.txt" (
-        echo torch==2.6.0+cu124
-        echo torchaudio==2.6.0+cu124
-        echo torchvision==0.21.0+cu124
-    )
-    set "PIP_CONSTRAINT=-c pip-constraints-cu124.txt"
-    echo [INFO] Constraints applied to keep CUDA PyTorch pinned
-) else (
-    if exist "pip-constraints-cu124.txt" del /q "pip-constraints-cu124.txt"
-)
-%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% !PIP_CONSTRAINT! -r requirements.txt --index-url %PIP_INDEX% --find-links "%TORCH_INDEX%" --retries 5 --timeout 120
+:: requirements.txt 已 pin torch==2.6.0 等基版本：已装 cu124（2.6.0+cu124 满足 ==2.6.0）
+:: pip 即判定满足自动跳过，不会因加速依赖（torch>=2.0.0）重新解析 CPU 版覆盖
+%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% -r requirements.txt --index-url %PIP_INDEX% --retries 5 --timeout 120
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed
     pause

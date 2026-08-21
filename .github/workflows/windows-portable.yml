@@ -35,6 +35,9 @@ jobs:
         shell: pwsh
         working-directory: asr-service
 
+    env:
+      PIP_CACHE_DIR: ${{ runner.temp }}\pip-cache
+
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +54,15 @@ jobs:
           }
           $disk = Get-PSDrive C
           Write-Host "C: free $([math]::Round($disk.Free / 1GB, 1)) GB"
+
+      # ── 1.5 pip wheel 缓存（torch cu124 wheel ~2.5GB + 全量依赖，命中免重下）─
+      - name: Cache pip wheels
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\pip-cache
+          key: pip-win-${{ hashFiles('asr-service/requirements.txt') }}-cu124
+          restore-keys: |
+            pip-win-
 
       # ── 2. Python 3.12 Embeddable amd64 ──────────────────────────
       - name: Set up Python 3.12 embeddable
@@ -104,7 +116,7 @@ jobs:
           & bin\python\python.exe -m pip install `
             torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124 `
             --index-url https://download.pytorch.org/whl/cu124 `
-            --target lib\site-packages --no-cache-dir
+            --target lib\site-packages
           if ($LASTEXITCODE -ne 0) { throw "CUDA torch installation failed" }
           $ver = & bin\python\python.exe -c "import torch; print(torch.__version__)" 2>&1
           if ($LASTEXITCODE -ne 0 -or $ver -notlike '*+cu124*') {
@@ -112,20 +124,14 @@ jobs:
           }
           Write-Host "torch: $ver"
 
-      # ── 6. 其余依赖（含约束：防加速等依赖链拉入 CPU torch 覆盖 dist-info）─
+      # ── 6. 其余依赖（requirements 已 pin torch==2.6.0：已装 cu124 满足基版本
+      #  即自动跳过，杜绝加速依赖链拉入 CPU torch 覆盖） ──────────────
       - name: Install remaining dependencies
         run: |
           $ErrorActionPreference = 'Stop'
-          @"
-          torch==2.6.0+cu124
-          torchaudio==2.6.0+cu124
-          torchvision==0.21.0+cu124
-          "@ | Out-File -Encoding ASCII $env:TEMP\cu124-constraints.txt
           & bin\python\python.exe -m pip install -r requirements.txt `
             --index-url https://pypi.org/simple `
-            --target lib\site-packages --no-cache-dir `
-            --find-links https://download.pytorch.org/whl/cu124 `
-            -c $env:TEMP\cu124-constraints.txt
+            --target lib\site-packages
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
           $ver = & bin\python\python.exe -c "import torch; print(torch.__version__)" 2>&1
           if ($ver -notlike '*+cu124*') {

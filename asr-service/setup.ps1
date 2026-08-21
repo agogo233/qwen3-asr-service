@@ -203,7 +203,7 @@ function Install-PyTorch {
     if (-not $hasGpu) {
         Write-Host '[WARN] No GPU detected, installing CPU PyTorch' -ForegroundColor Yellow
         $cpuArgs = @('-m', 'pip', 'install') + $script:PipTarget + @(
-            'torch', 'torchaudio', 'torchvision',
+            'torch==2.6.0', 'torchaudio==2.6.0', 'torchvision==0.21.0',
             '--index-url', $script:PypiIndex
         )
         & $script:PythonBin @cpuArgs
@@ -260,7 +260,7 @@ function Install-PyTorch {
         }
         Write-Host '[INFO] Installing CPU PyTorch as fallback...' -ForegroundColor Yellow
         $cpuArgs = @('-m', 'pip', 'install') + $script:PipTarget + @(
-            'torch', 'torchaudio', 'torchvision',
+            'torch==2.6.0', 'torchaudio==2.6.0', 'torchvision==0.21.0',
             '--index-url', $script:PypiIndex
         )
         & $script:PythonBin @cpuArgs
