@@ -215,7 +215,7 @@ jobs:
           $helpOut = Join-Path $env:RUNNER_TEMP 'help_out.txt'
           cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File start.ps1 --help < nul > `"$helpOut`" 2>&1"
           if ($LASTEXITCODE -ne 0) { Get-Content $helpOut; throw "start.ps1 --help failed" }
-          if ((Get-Content $helpOut -Raw) -notmatch 'usage:') { throw "usage text missing" }
+          if ((Get-Content $helpOut -Raw) -notmatch 'usage:') { Get-Content $helpOut; throw "usage text missing" }
           Write-Host "[OK] start.ps1 --help passed"
 
           & bin\python\python.exe -c 'import app.main; from app.web.views import ASSETS_DIR; import os; assert os.path.isdir(ASSETS_DIR), "web assets missing"'
