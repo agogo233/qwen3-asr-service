@@ -392,7 +392,12 @@ function Show-SetupComplete {
     # Self-check (portable mode only): verify torch and funasr importable
     if ($script:PythonMode -eq 'portable') {
         Write-Host '[INFO] Verifying installation...' -ForegroundColor Cyan
+        # PS5.1 陷阱：EAP=Stop 时重定向下的原生命令 stderr 会升级为终止性
+        # NativeCommandError；此处探测失败仅需告警，临时降级 EAP
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         & $script:PythonBin -c "import torch, funasr; print(torch.__version__)" 2>$null
+        $ErrorActionPreference = $prevEap
         if ($LASTEXITCODE -eq 0) {
             Write-Host '[INFO] Installation verified: torch and funasr are importable' -ForegroundColor Green
         }
