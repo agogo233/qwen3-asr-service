@@ -65,6 +65,22 @@
       'identify.noFile': '请选择音频文件',
       'identify.failed': '识别失败：{0}',
       'identify.noMatchHint': '未匹配：声纹库中无足够相似的模板。',
+      // 模板管理弹窗
+      'btn.templates': '模板',
+      'tmpl.title': '{0} · 模板管理',
+      'tmpl.col.id': '序号', 'tmpl.col.dur': '时长', 'tmpl.col.created': '创建时间', 'tmpl.col.actions': '操作',
+      'tmpl.btn.add': '追加', 'tmpl.btn.delete': '删除',
+      'tmpl.addHint': '点击或拖拽上传单人音频样本，将追加到该说话人的模板',
+      'tmpl.confirmDelete': '确认删除此模板？删除后质心将自动重算。',
+      'tmpl.maxHint': '模板数已达上限（{0} 条）：删除部分旧模板后才能继续追加。',
+      'tmpl.noTemplates': '暂无模板',
+      'tmpl.deleteLastHint': '已删除最后一条模板：识别仍使用最后一次质心；建议追加样本或删除该说话人',
+      'msg.tmplOpenFailed': '模板加载失败：{0}',
+      'msg.tmplNoFile': '请选择音频文件',
+      'msg.addTmplSuccess': '已追加 1 条模板（共 {0} 条）',
+      'msg.addTmplFailed': '追加模板失败：{0}',
+      'msg.delTmplSuccess': '已删除模板（剩 {0} 条）',
+      'msg.delTmplFailed': '删除模板失败：{0}',
     },
     en: {
       'page.title': 'Speaker Management - Qwen3-ASR Service',
@@ -116,6 +132,22 @@
       'identify.noFile': 'Please select an audio file',
       'identify.failed': 'Identification failed: {0}',
       'identify.noMatchHint': 'No match: no templates in the library with sufficient similarity.',
+      // Template management modal
+      'btn.templates': 'Templates',
+      'tmpl.title': '{0} · Templates',
+      'tmpl.col.id': '#', 'tmpl.col.dur': 'Duration', 'tmpl.col.created': 'Created', 'tmpl.col.actions': 'Actions',
+      'tmpl.btn.add': 'Add', 'tmpl.btn.delete': 'Delete',
+      'tmpl.addHint': 'Click or drag a single-speaker audio sample to add to this speaker',
+      'tmpl.confirmDelete': 'Delete this template? The centroid is recomputed automatically.',
+      'tmpl.maxHint': 'Template limit reached ({0}): delete an existing one before adding more.',
+      'tmpl.noTemplates': 'No templates yet',
+      'tmpl.deleteLastHint': 'Last template removed: identification still uses the last centroid; add samples or delete this speaker',
+      'msg.tmplOpenFailed': 'Failed to load templates: {0}',
+      'msg.tmplNoFile': 'Please select an audio file',
+      'msg.addTmplSuccess': '1 template added ({0} total)',
+      'msg.addTmplFailed': 'Add template failed: {0}',
+      'msg.delTmplSuccess': 'Template deleted ({0} remaining)',
+      'msg.delTmplFailed': 'Delete template failed: {0}',
     },
   };
   const t = makeT(M);
@@ -267,6 +299,12 @@
         }
       }
 
+      // —— 模板管理（追加/删除模板）——
+      const tmpl = reactive({
+        show: false, speakerId: '', speakerName: '', templates: [], loading: false,
+        addFiles: [], adding: false,
+      });
+      let tmplFetchSeq = 0;   // 弹窗内列表请求序号：快速开关弹窗时丢弃过期响应（防竞态覆盖）
       // —— 识别说话人（单文件 1:N）——
       const identify = reactive({ show: false, files: [], submitting: false, result: null, error: '' });
       function openIdentify() {
@@ -291,10 +329,142 @@
         }
       }
 
-      // —— 表格列（render 函数式，Naive UI data-table 体例）——
-      // computed：t() 随语言切换刷新表头与表内文案
-      // 英文表头/按钮明显更长（Templates / Rename / Note 等）：列宽随语言取值，避免折行
+      // —— 模板管理：打开弹窗（GET 详情含模板列表）——
+      async function openTmpl(row) {
+        tmpl.speakerId = row.id;
+        tmpl.speakerName = row.name;
+        tmpl.show = true;
+        tmpl.templates = [];
+        tmpl.addFiles = [];
+        tmpl.adding = false;
+        tmpl.loading = true;
+        const seq = ++tmplFetchSeq;
+        try {
+          const r = await fetch('/v2/speakers/' + row.id, { headers: authHeaders() });
+          if (seq !== tmplFetchSeq) return;   // 过期响应（弹窗已重开），丢弃
+          if (!r.ok) {
+            const detail = await handleError(r, () => { tmpl.show = false; });
+            throw new Error(detail);
+          }
+          const data = await r.json();
+          tmpl.templates = data.templates || [];
+        } catch (e) {
+          if (seq !== tmplFetchSeq) return;   // 过期响应：不关新弹窗、不提示旧错误
+          tmpl.show = false;
+          message.error(t('msg.tmplOpenFailed', e.message));
+        } finally {
+          if (seq === tmplFetchSeq) tmpl.loading = false;
+        }
+      }
+
+      // —— 模板管理：刷新弹窗内列表（不关弹窗）——
+      async function reloadTmpl() {
+        if (!tmpl.speakerId) return;
+        const seq = ++tmplFetchSeq;
+        try {
+          const r = await fetch('/v2/speakers/' + tmpl.speakerId, { headers: authHeaders() });
+          if (seq !== tmplFetchSeq) return;
+          if (!r.ok) {
+            const detail = await handleError(r, () => { tmpl.show = false; });
+            throw new Error(detail);
+          }
+          const data = await r.json();
+          tmpl.templates = data.templates || [];
+        } catch (e) {
+          if (seq !== tmplFetchSeq) return;
+          message.error(t('msg.tmplOpenFailed', e.message));
+        }
+      }
+
+      // —— 模板管理：追加模板（单文件）——
+      async function addTemplate() {
+        if (!tmpl.addFiles.length) { message.warning(t('msg.tmplNoFile')); return; }
+        tmpl.adding = true;
+        const form = new FormData();
+        form.append('file', tmpl.addFiles[0].file);
+        try {
+          const r = await fetch('/v2/speakers/' + tmpl.speakerId + '/templates', {
+            method: 'POST', body: form, headers: authHeaders(),
+          });
+          if (!r.ok) {
+            const detail = await handleError(r);
+            throw new Error(detail);
+          }
+          const data = await r.json();
+          tmpl.addFiles = [];
+          message.success(t('msg.addTmplSuccess', data.templates));
+          await reloadTmpl();
+        } catch (e) {
+          message.error(t('msg.addTmplFailed', e.message));
+        } finally {
+          tmpl.adding = false;
+        }
+      }
+
+      // —— 模板管理：删除单条模板 ——
+      async function confirmDeleteTmpl(trow) {
+        try {
+          const r = await fetch('/v2/speakers/' + tmpl.speakerId + '/templates/' + trow.id, {
+            method: 'DELETE', headers: authHeaders(),
+          });
+          if (!r.ok) {
+            const detail = await handleError(r);
+            throw new Error(detail);
+          }
+          const data = await r.json();
+          if (data.remaining === 0 && data.hint) {
+            message.warning(t('tmpl.deleteLastHint'));
+          } else {
+            message.success(t('msg.delTmplSuccess', data.remaining));
+          }
+          await reloadTmpl();
+        } catch (e) {
+          message.error(t('msg.delTmplFailed', e.message));
+        }
+      }
+
+      // —— 模板管理：关闭（Cancel 按钮路径）——按钮直接赋值不触发 update:show，需显式刷新
+      function closeTmpl() {
+        if (!tmpl.show) return;
+        tmpl.show = false;
+        load();
+      }
+
+      // —— 弹窗关闭后刷新外部列表（template_count 同步）——
+      function onTmplClose() {
+        if (tmpl.show) return;
+        load();
+      }
+
+      // —— 模板管理弹窗表格列 ——
+      // computed：t()/locale 切换刷新表头与表内文案；wide 随语言控制列宽（定义见下）
       const wide = computed(() => locale.value === 'en');
+      const tmplColumns = computed(() => [
+        { title: t('tmpl.col.id'), key: 'id', width: 64, align: 'center' },
+        {
+          title: t('tmpl.col.dur'), key: 'dur_sec', width: wide.value ? 110 : 90,
+          render: row => (row.dur_sec != null ? row.dur_sec.toFixed(1) + 's' : '—'),
+        },
+        {
+          title: t('tmpl.col.created'), key: 'created_at', width: 170,
+          render: row => fmtDate(row.created_at),
+        },
+        {
+          title: t('tmpl.col.actions'), key: 'actions', width: wide.value ? 120 : 100, align: 'right',
+          render: row => h(naive.NPopconfirm, {
+            onPositiveClick: () => confirmDeleteTmpl(row),
+            positiveText: t('confirm.deletePositive'), negativeText: t('confirm.deleteNegative'),
+            positiveButtonProps: { type: 'error' },
+          }, {
+            trigger: () => h(naive.NButton, { size: 'tiny', tertiary: true, type: 'error' },
+              { default: () => t('tmpl.btn.delete') }),
+            default: () => t('tmpl.confirmDelete'),
+          }),
+        },
+      ]);
+
+      // —— 表格列（render 函数式，Naive UI data-table 体例）——
+      // t() 随语言切换刷新表头与表内文案（wide 声明在 tmplColumns 前）
       const columns = computed(() => [
         {
           title: t('col.name'), key: 'name',
@@ -316,9 +486,11 @@
           render: row => fmtDate(row.created_at),
         },
         {
-          title: t('col.actions'), key: 'actions', width: wide.value ? 210 : 150, align: 'right',
+          title: t('col.actions'), key: 'actions', width: wide.value ? 270 : 200, align: 'right',
           render: row => h(naive.NSpace, { justify: 'end', size: 'small' }, {
             default: () => [
+              h(naive.NButton, { size: 'tiny', tertiary: true, onClick: () => openTmpl(row) },
+                { default: () => t('btn.templates') }),
               h(naive.NButton, { size: 'tiny', tertiary: true, onClick: () => openEdit(row) },
                 { default: () => t('btn.edit') }),
               h(naive.NPopconfirm, {
@@ -341,7 +513,8 @@
       watch(locale, setTitle);
 
       return { rows, loading, guide, columns, load, edit, saveEdit, removeSpeaker,
-               enroll, openEnroll, submitEnroll, identify, openIdentify, submitIdentify, t };
+               enroll, openEnroll, submitEnroll, identify, openIdentify, submitIdentify,
+               tmpl, openTmpl, addTemplate, confirmDeleteTmpl, closeTmpl, onTmplClose, tmplColumns, t };
     },
     template: `
       <div style="max-width:980px;margin:0 auto;">
@@ -456,6 +629,53 @@
             <n-space justify="end" v-if="!identify.result && !identify.error">
               <n-button size="small" :disabled="identify.submitting || !identify.files.length" @click="identify.show = false">{{ t('btn.cancel') }}</n-button>
               <n-button size="small" type="primary" :loading="identify.submitting" @click="submitIdentify">{{ t('btn.identifySubmit') }}</n-button>
+            </n-space>
+          </n-space>
+        </n-modal>
+
+        <n-modal v-model:show="tmpl.show" preset="card"
+                 :title="t('tmpl.title', tmpl.speakerName || '')"
+                 style="width:560px;" :mask-closable="!tmpl.loading && !tmpl.adding"
+                 @update:show="onTmplClose">
+          <n-space vertical size="large">
+            <template v-if="tmpl.loading">
+              <div style="padding:20px;text-align:center;"><n-spin size="small"></n-spin></div>
+            </template>
+            <template v-else>
+              <!-- 模板列表 -->
+              <template v-if="tmpl.templates.length">
+                <n-alert v-if="tmpl.templates.length >= 16" type="warning" :show-icon="false"
+                         style="margin-bottom:6px;">
+                  {{ t('tmpl.maxHint', tmpl.templates.length) }}
+                </n-alert>
+                <n-data-table :columns="tmplColumns" :data="tmpl.templates"
+                              :bordered="false" size="small" :row-key="r => r.id">
+                </n-data-table>
+              </template>
+              <n-empty v-else :description="t('tmpl.noTemplates')" size="small"></n-empty>
+              <!-- 追加区域 -->
+              <n-divider style="margin:0;"></n-divider>
+              <n-text depth="3" style="display:block;font-size:.78em;margin-bottom:6px;">
+                {{ t('tmpl.btn.add') }}（{{ t('enroll.formats') }}）
+              </n-text>
+              <n-upload :default-upload="false" :show-file-list="true"
+                        accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,.wma,.amr,.opus"
+                        :file-list="tmpl.addFiles"
+                        :disabled="tmpl.adding || tmpl.templates.length >= 16"
+                        @change="(p) => { const list = p.fileList || []; tmpl.addFiles = list.length ? [list[list.length - 1]] : [] }">
+                <n-upload-dragger>
+                  <div style="color:#14b8a6;margin-bottom:6px;"><a-icon name="upload" size="20"></a-icon></div>
+                  <n-text style="font-size:.82em;font-weight:600;">{{ t('tmpl.addHint') }}</n-text>
+                </n-upload-dragger>
+              </n-upload>
+              <div style="display:flex;justify-content:flex-end;">
+                <n-button size="small" type="primary" :loading="tmpl.adding"
+                          :disabled="tmpl.adding || !tmpl.addFiles.length || tmpl.templates.length >= 16"
+                          @click="addTemplate">{{ t('tmpl.btn.add') }}</n-button>
+              </div>
+            </template>
+            <n-space justify="end">
+              <n-button size="small" :disabled="tmpl.adding" @click="closeTmpl">{{ t('btn.cancel') }}</n-button>
             </n-space>
           </n-space>
         </n-modal>
