@@ -13,7 +13,7 @@ name: Windows Portable (AMD64 + CUDA)
 #   3. 改写 _pth 启用 portable 模式（与 setup.ps1 Repair-EmbeddedPth 一致）
 #   4. 安装 pip 到 lib\site-packages
 #   5. 安装 CUDA PyTorch 全家桶（torch 2.6.0+cu124）
-#   6. 安装 requirements.txt 其余依赖（先过滤 torch 三件套行，防 CPU 版重复下载）
+#   6. 安装 requirements.txt 其余依赖（过滤 torch 三件套行后，以 CLI 参数显式钉死 cu124 版本）
 #   7. 下载 ffmpeg（bin\ffmpeg.exe + bin\ffprobe.exe）
 #   8. 冒烟验证：import torch/funasr/qwen_asr + pip check
 #   8.5 脚本链路验证：构建目录上跑 setup.ps1(SKIP_INSTALL)/start.ps1 --help/import app.main
@@ -66,13 +66,13 @@ jobs:
           Write-Host "C: free $([math]::Round($disk.Free / 1GB, 1)) GB"
 
       # ── 1.5 pip wheel 缓存（torch cu124 wheel ~2.5GB + 全量依赖，命中免重下）─
+      # key 追加 -v2 且不设 restore-keys：一次性弃用被污染的旧缓存（内含误拉的
+      # CPU torch 2.13.0 wheel ~800MB），代价是首次运行全量重下
       - name: Cache pip wheels
         uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}\pip-cache
-          key: pip-win-${{ hashFiles('asr-service/requirements.txt') }}-cu124
-          restore-keys: |
-            pip-win-
+          key: pip-win-${{ hashFiles('asr-service/requirements.txt') }}-cu124-v2
 
       # ── 2. Python 3.12 Embeddable amd64 ──────────────────────────
       - name: Set up Python 3.12 embeddable
@@ -139,10 +139,12 @@ jobs:
           }
           Write-Host "torch: $ver"
 
-      # ── 6. 其余依赖（先过滤 torch 三件套行再装） ─────────────────
-      # pip --target 隐式忽略已安装包，不存在"已装 cu124 满足 ==2.6.0 即跳过"；
-      # 不过滤会白下 ~200MB CPU wheel 并留下重复 dist-info，仅靠"目标目录已有
-      # 文件不覆盖"的实现细节才保住 cu124。过滤后彻底消除该依赖路径。
+      # ── 6. 其余依赖（过滤 torch 三件套行，CLI 参数显式钉死 cu124 版本） ──
+      # pip --target 隐式忽略已安装包；若仅过滤 pins 而不补约束，accelerate 等
+      # 依赖的裸 torch>=2.0.0 会拉入 PyPI 最新 CPU 版（曾拉入 2.13.0：Windows
+      # 长路径致深层文件覆盖静默失败、只留下 dist-info 元数据，pip check 对账
+      # 失败）。故 CLI 显式传三件套 +cu124 pin 钉死版本，异版需求将在本步响亮
+      # 报错而非静默污染。--extra-index-url 必带（PyPI 无 +cu124 local wheel）。
       - name: Install remaining dependencies
         env:
           PIP_CACHE_DIR: ${{ runner.temp }}\pip-cache
@@ -154,13 +156,21 @@ jobs:
             Set-Content $filtered
           Write-Host "torch lines filtered, installing from $filtered"
           & bin\python\python.exe -m pip install -r $filtered `
+            torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124 `
             --index-url https://pypi.org/simple `
+            --extra-index-url https://download.pytorch.org/whl/cu124 `
             --target lib\site-packages
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
           $ver = & bin\python\python.exe -c "import torch; print(torch.__version__)" 2>&1
-          if ($ver -notlike '*+cu124*') {
+          if ($LASTEXITCODE -ne 0 -or $ver -notlike '*+cu124*') {
             throw "Torch was downgraded to non-CUDA version: $ver"
           }
+          # 防御：torch 家族 dist-info 必须均为 cu124 版本，否则元数据与文件
+          # 不一致会让 pip check 失败（torchlibrosa 等非三件套包不受影响）
+          $bad = Get-ChildItem lib\site-packages -Directory |
+            Where-Object Name -match '^(torchaudio|torchvision|torch)-[\d.]+.*\.dist-info$' |
+            Where-Object Name -notmatch '\+cu124'
+          if ($bad) { throw "Foreign torch dist-info detected: $($bad.Name -join ', ')" }
           Write-Host "All dependencies installed, torch still cu124: $ver"
 
       # ── 7. ffmpeg（gyan.dev essentials） ─────────────────────────
