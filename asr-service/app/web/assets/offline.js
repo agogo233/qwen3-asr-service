@@ -15,6 +15,11 @@
       'meta.on': '开启', 'meta.off': '关闭',
       'result.segments': '分段结果', 'result.noSegments': '无分段数据',
       'result.fullText': '完整文本', 'result.rawJson': '原始 JSON', 'result.downloadJson': '下载 JSON',
+      'result.export': '导出',
+      'export.srt': '下载 SRT', 'export.vtt': '下载 VTT', 'export.txt': '下载 TXT',
+      'action.copyFull': '复制全文',
+      'msg.copied': '已复制到剪贴板', 'msg.copyFailed': '复制失败: {0}',
+      'action.retry': '重试',
       'spk.anonymous': '匿名说话人', 'spk.autoEnrolled': '自动登记（可在说话人管理页改名）',
       'spk.similarity': '声纹相似度 {0}',
       // 音频标注（派生场景 + 事件段）
@@ -79,6 +84,11 @@
       'meta.on': 'on', 'meta.off': 'off',
       'result.segments': 'Segments', 'result.noSegments': 'No segment data',
       'result.fullText': 'Full text', 'result.rawJson': 'Raw JSON', 'result.downloadJson': 'Download JSON',
+      'result.export': 'Export',
+      'export.srt': 'Download SRT', 'export.vtt': 'Download VTT', 'export.txt': 'Download TXT',
+      'action.copyFull': 'Copy full text',
+      'msg.copied': 'Copied to clipboard', 'msg.copyFailed': 'Copy failed: {0}',
+      'action.retry': 'Retry',
       'spk.anonymous': 'Anonymous speaker', 'spk.autoEnrolled': 'Auto-enrolled (rename on the Speakers page)',
       'spk.similarity': 'Voiceprint similarity {0}',
       'scene.silence': 'Silence', 'scene.speech': 'Speech', 'scene.singing': 'Singing',
@@ -157,6 +167,7 @@
   const ResultView = {
     props: { data: { type: Object, required: true }, onSeek: { type: Function, default: null } },
     setup(props) {
+      const message = naive.useMessage();
       const result = computed(() => props.data.result || {});
       const segments = computed(() => result.value.segments || []);
       const audioEvents = computed(() => result.value.audio_events || []);
@@ -173,13 +184,73 @@
         return tags;
       });
       const jsonText = computed(() => JSON.stringify(props.data, null, 2));
-      function downloadJson() {
-        const blob = new Blob([jsonText.value], { type: 'application/json' });
+      /* 秒 → "HH:MM:SS,mmm"（SRT）/ "HH:MM:SS.mmm"（VTT）；先取整毫秒再拆位，避免进位溢出 */
+      function stamp(sec, msSep) {
+        const total = Math.max(0, Math.round((sec || 0) * 1000));
+        const p2 = n => String(n).padStart(2, '0');
+        return p2(Math.floor(total / 3600000)) + ':' + p2(Math.floor(total % 3600000 / 60000)) + ':'
+             + p2(Math.floor(total % 60000 / 1000)) + msSep + String(total % 1000).padStart(3, '0');
+      }
+      /* 字幕段文本：有说话人时加 "[名字] " 前缀（SRT/VTT 标准不含说话人字段，此为通行约定） */
+      function segText(seg) {
+        const name = seg.speaker_name || seg.speaker;
+        return (name ? '[' + name + '] ' : '') + (seg.text || '');
+      }
+      function download(name, text, mime) {
+        const blob = new Blob([text], { type: mime });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = 'asr_result.json';
+        a.download = name;
         a.click();
         URL.revokeObjectURL(a.href);
+      }
+      function srtText() {
+        return segments.value.map((seg, i) =>
+          (i + 1) + '\n' + stamp(seg.start, ',') + ' --> ' + stamp(seg.end, ',') + '\n' + segText(seg)).join('\n\n') + '\n';
+      }
+      function vttText() {
+        return 'WEBVTT\n\n' + segments.value.map(seg =>
+          stamp(seg.start, '.') + ' --> ' + stamp(seg.end, '.') + '\n' + segText(seg)).join('\n\n') + '\n';
+      }
+      function txtText() {
+        return result.value.full_text || segments.value.map(segText).join('\n');
+      }
+      /* 导出菜单：JSON 恒可；SRT/VTT 需分段（仅标注模式无）；TXT 需全文或分段 */
+      const exportOptions = computed(() => {
+        const opts = [{ label: t('result.downloadJson'), key: 'json' }];
+        if (segments.value.length) opts.push(
+          { label: t('export.srt'), key: 'srt' },
+          { label: t('export.vtt'), key: 'vtt' });
+        opts.push({ label: t('export.txt'), key: 'txt', disabled: !(result.value.full_text || segments.value.length) });
+        return opts;
+      });
+      function exportAs(key) {
+        if (key === 'json') download('asr_result.json', jsonText.value, 'application/json');
+        else if (key === 'srt') download('asr_result.srt', srtText(), 'application/x-subrip');
+        else if (key === 'vtt') download('asr_result.vtt', vttText(), 'text/vtt');
+        else if (key === 'txt') download('asr_result.txt', txtText(), 'text/plain');
+      }
+      async function copyFull() {
+        const text = result.value.full_text || '';
+        try {
+          await navigator.clipboard.writeText(text);
+          message.success(t('msg.copied'));
+        } catch (e) {
+          // http 非 localhost 等非安全上下文无 Clipboard API：textarea + execCommand 降级
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            if (!document.execCommand('copy')) throw new Error('execCommand failed');
+            ta.remove();
+            message.success(t('msg.copied'));
+          } catch (e2) {
+            message.error(t('msg.copyFailed', e2.message));
+          }
+        }
       }
       function seek(seg) { if (props.onSeek && seg.start != null) props.onSeek(seg); }
       function seekEvent(ev) { if (props.onSeek && ev.start_ms != null) props.onSeek({ start: ev.start_ms / 1000 }); }
@@ -199,7 +270,8 @@
         else base = m.score != null ? t('spk.similarity', m.score.toFixed(2)) : '';
         return [base, idPart].filter(Boolean).join(' · ');
       }
-      return { result, segments, audioEvents, sceneTimeline, isEmpty, metaTags, jsonText, downloadJson,
+      return { result, segments, audioEvents, sceneTimeline, isEmpty, metaTags, jsonText,
+               exportOptions, exportAs, copyFull,
                seek, seekEvent, fmtTime, fmtMs, spkIdx, spkTitle, sceneLabel, sceneCls, sceneTags, scenePct, t };
     },
     template: `
@@ -242,11 +314,16 @@
 
         <n-collapse :default-expanded-names="['full']" style="margin-top:18px;">
           <n-collapse-item v-if="result.full_text" :title="t('result.fullText')" name="full">
+            <template #header-extra>
+              <n-button size="tiny" tertiary @click.stop="copyFull">{{ t('action.copyFull') }}</n-button>
+            </template>
             <div class="full-text">{{ result.full_text }}</div>
           </n-collapse-item>
           <n-collapse-item :title="t('result.rawJson')" name="json">
             <template #header-extra>
-              <n-button size="tiny" tertiary @click.stop="downloadJson">{{ t('result.downloadJson') }}</n-button>
+              <n-dropdown trigger="click" :options="exportOptions" @select="exportAs">
+                <n-button size="tiny" tertiary @click.stop>{{ t('result.export') }}</n-button>
+              </n-dropdown>
             </template>
             <pre class="json-pre">{{ jsonText }}</pre>
           </n-collapse-item>
@@ -690,8 +767,11 @@
                 <n-skeleton text :repeat="3" style="margin-top:18px;"></n-skeleton>
               </template>
               <n-alert v-else-if="current.phase === 'error'" type="error" :show-icon="true" :title="t('result.failed')">{{ current.error }}</n-alert>
+              <div v-if="current.phase === 'error' && selectedFile" style="margin-top:12px;">
+                <n-button size="small" type="primary" secondary @click="submit">{{ t('action.retry') }}</n-button>
+              </div>
               <result-view v-else-if="current.phase === 'done' && current.data" :data="current.data" :on-seek="seekAudio"></result-view>
-              <n-empty v-else :description="t('result.empty')" style="margin:48px 0;"></n-empty>
+              <n-empty v-else-if="current.phase === 'idle'" :description="t('result.empty')" style="margin:48px 0;"></n-empty>
             </n-card>
           </div>
         </div>
