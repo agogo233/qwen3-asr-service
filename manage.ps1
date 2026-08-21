@@ -762,6 +762,26 @@ function Portable-Remove {
     Press-AnyKey
 }
 
+function Install-CpuTorch {
+    # 便携环境 CPU 版 PyTorch 兜底安装（无 GPU 或 CUDA 安装失败时调用）；
+    # 已有任意版本 torch 时跳过，避免 --target 重复下载
+    param([string]$PythonBin, [string[]]$PipTarget)
+
+    $torchVer = & $PythonBin -c "import torch; print(torch.__version__)" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "PyTorch 已存在（$($torchVer.Trim())），跳过 CPU 版安装"
+        return
+    }
+    Write-Info '安装 CPU 版 PyTorch...'
+    $cpuArgs = @('-m', 'pip', 'install') + $PipTarget + @(
+        'torch==2.6.0', 'torchaudio==2.6.0', 'torchvision==0.21.0',
+        '--index-url', $script:PypiIndex
+    )
+    & $PythonBin @cpuArgs
+    if ($LASTEXITCODE -eq 0) { Write-Ok 'CPU 版 PyTorch 已安装' }
+    else { Write-Err 'CPU 版 PyTorch 安装失败' }
+}
+
 function Portable-UpdateDeps {
     if (-not $script:HasPortable) { Write-Warn '便携式 Python 未安装'; Press-AnyKey; return }
 
@@ -793,12 +813,15 @@ function Portable-UpdateDeps {
         catch { }
     }
 
-    # Step 2a: 若 GPU 可用，先装 CUDA 版 PyTorch（提前于依赖安装，使 requirements.txt 中 torch 约束被自动满足跳过）
+    # Step 2a: torch 三件套统一在此步骤负责（CUDA 或 CPU 兜底），
+    # 后续 Step 3 会过滤 requirements.txt 的 torch 行，不再隐式依赖其兜底
+    $cudaExpected = $false
     if ($hasGpu) {
         # 跳过检查：已装 cu124 版 → 无需重装
         $torchVer = & $pythonBin -c "import torch; print(torch.__version__)" 2>$null
         if ($LASTEXITCODE -eq 0 -and $torchVer -like '*+cu124*') {
             Write-Ok "CUDA 版 PyTorch 已安装（$($torchVer.Trim())），跳过"
+            $cudaExpected = $true
         }
         else {
             Write-Ok 'NVIDIA GPU 已检测，将安装 CUDA 版 PyTorch'
@@ -821,6 +844,7 @@ function Portable-UpdateDeps {
             & $pythonBin @cudaArgs
             if ($LASTEXITCODE -eq 0) {
                 Write-Ok 'CUDA 版 PyTorch 已安装'
+                $cudaExpected = $true
                 # 装后自检：CUDA 可用性
                 $cudaOk = & $pythonBin -c "import torch; print(torch.cuda.is_available())" 2>$null
                 if ($cudaOk -notmatch 'True') {
@@ -828,8 +852,8 @@ function Portable-UpdateDeps {
                 }
             }
             else {
-                Write-Err 'CUDA 版 PyTorch 安装失败（已回退至 CPU 版）'
-                # 回退清理：确保后续依赖安装能装全量 CPU 版
+                Write-Err 'CUDA 版 PyTorch 安装失败（回退至 CPU 版）'
+                # 回退清理后显式补装 CPU 版（Step 3 已过滤 torch 行，不会再兜底）
                 foreach ($item in $torchItems) {
                     $dir = Join-Path $sitePkgs $item
                     if (Test-Path $dir) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
@@ -837,24 +861,39 @@ function Portable-UpdateDeps {
                 Get-ChildItem $sitePkgs -Directory -Filter 'torch*.dist-info' -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -match '^torch[a-z]*-\d' } |
                     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                Install-CpuTorch -PythonBin $pythonBin -PipTarget $pipTarget
             }
         }
     }
     else {
-        Write-Warn '未检测到 GPU，将安装 CPU 版 PyTorch'
+        Write-Warn '未检测到 GPU，使用/安装 CPU 版 PyTorch'
+        Install-CpuTorch -PythonBin $pythonBin -PipTarget $pipTarget
     }
 
     # Step 3: Update dependencies from requirements.txt
-    #    GPU 路径下 CUDA 版 torch 已提前安装，requirements.txt 中 torch==2.6.0 约束被 2.6.0+cu124
-    #    满足（packaging 实际行为），pip 自动跳过，不会重复下载或覆盖为 CPU 版。
-    #    CPU 路径下全量安装，与原行为一致。
+    #    pip --target 隐式忽略已安装包（叠加 --upgrade 还会强制覆盖已有文件），
+    #    不过滤会把已装 cu124 真正覆盖为 ~200MB 的 CPU wheel；torch 三件套由
+    #    Step 2 统一负责，此处过滤后再装。
     $reqFile = Join-Path $ServiceDir 'requirements.txt'
     if (Test-Path $reqFile) {
         Write-Host
         Write-Info '更新项目依赖...'
-        $depArgs = @('-m', 'pip', 'install', '--upgrade') + $pipTarget + @('-r', $reqFile, '--index-url', $script:PypiIndex)
+        $filteredReq = Join-Path $env:TEMP 'asr-requirements-no-torch.txt'
+        Get-Content $reqFile -Encoding UTF8 |
+            Where-Object { $_ -notmatch '^\s*torch(audio|vision)?==' } |
+            Set-Content $filteredReq -Encoding UTF8
+        $depArgs = @('-m', 'pip', 'install', '--upgrade') + $pipTarget + @('-r', $filteredReq, '--index-url', $script:PypiIndex)
         & $pythonBin @depArgs
-        if ($LASTEXITCODE -eq 0) { Write-Ok '项目依赖已更新' }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok '项目依赖已更新'
+            if ($cudaExpected) {
+                $torchVer = & $pythonBin -c "import torch; print(torch.__version__)" 2>$null
+                if ($LASTEXITCODE -ne 0 -or $torchVer -notlike '*+cu124*') {
+                    $actual = if ($torchVer) { $torchVer.Trim() } else { 'import failed' }
+                    Write-Err "CUDA 版 PyTorch 在依赖更新后丢失（当前：$actual），请重新运行本项或 setup.ps1 重装 cu124"
+                }
+            }
+        }
         else { Write-Err '项目依赖更新失败（部分包可能不兼容）' }
     }
     else {

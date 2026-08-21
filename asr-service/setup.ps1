@@ -206,9 +206,8 @@ function Install-PipIfNeeded {
 }
 
 # 提前于 Install-Dependencies 调用：先检测 GPU，有 GPU 时通过 find-links 从 TorchIndex 镜像
-# 安装 CUDA 版 torch/torchaudio/torchvision（带依赖），使得后续 Install-Dependencies 中
-# requirements.txt 的 torch==2.6.0 约束被 2.6.0+cu124 满足而自动跳过，避免重复下载。
-# 无 GPU 或安装失败时返回 $false（Install-Dependencies 装全量 CPU 版兜底），已装 CUDA 版时跳过。
+# 安装 CUDA 版 torch/torchaudio/torchvision（带依赖）。torch 三件套统一由本函数负责：
+# 无 GPU 或安装失败时回退安装 CPU 版兜底并返回 $false；已装 cu124 时跳过返回 $true。
 function Install-PyTorch {
     Write-Host
     Write-Host '[INFO] Checking NVIDIA GPU...' -ForegroundColor Cyan
@@ -302,15 +301,25 @@ function Install-PyTorch {
 }
 
 function Install-Dependencies {
+    param([bool]$CudaTorchInstalled = $false)
+
     $reqFile = Join-Path $PSScriptRoot 'requirements.txt'
     if (-not (Test-Path $reqFile)) {
         Write-Host '[WARN] requirements.txt not found, skipping dependency installation' -ForegroundColor Yellow
         return
     }
 
+    # pip --target 隐式忽略已安装包（不会因已装 cu124 而跳过 torch==2.6.0），
+    # 会白下 ~200MB CPU wheel 并留下重复 dist-info；先过滤 torch 三件套行再装。
+    # torch 必然已由 Install-PyTorch 装好（cu124 或 CPU 兜底），过滤不会缺依赖。
+    $filteredReq = Join-Path $env:TEMP 'asr-requirements-no-torch.txt'
+    Get-Content $reqFile -Encoding UTF8 |
+        Where-Object { $_ -notmatch '^\s*torch(audio|vision)?==' } |
+        Set-Content $filteredReq -Encoding UTF8
+
     Write-Host
     Write-Host '[INFO] Installing project dependencies...' -ForegroundColor Cyan
-    $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @('-r', $reqFile, '--index-url', $script:PypiIndex)
+    $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @('-r', $filteredReq, '--index-url', $script:PypiIndex)
     & $script:PythonBin @pipArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[ERROR] Dependency installation failed' -ForegroundColor Red
@@ -322,10 +331,17 @@ function Install-Dependencies {
         $torchVer = Invoke-Probe $script:PythonBin @('-c', 'import torch; print(torch.__version__)')
         if ($LASTEXITCODE -eq 0 -and $torchVer -like '*+cu124*') {
             Write-Host '[INFO] CUDA PyTorch confirmed' -ForegroundColor Green
-        } else {
-            Write-Host '[WARN] torch was downgraded to non-CUDA version after dependency install' -ForegroundColor Yellow
-            Write-Host "[INFO] Expected: torch.__version__ containing '+cu124'" -ForegroundColor Yellow
-            Write-Host "[INFO] Actual: $torchVer" -ForegroundColor Yellow
+        }
+        elseif ($CudaTorchInstalled) {
+            # 仅当本次确实装了 cu124 而装完依赖后丢失 +cu124 才判定降级并阻断；
+            # 无 GPU / CPU 兜底的合法场景走下方 else 分支正常提示
+            Write-Host "[ERROR] CUDA PyTorch was downgraded to non-CUDA version after dependency install: $($torchVer.Trim())" -ForegroundColor Red
+            Write-Host '[ERROR] Re-run setup.ps1 to reinstall the cu124 wheels' -ForegroundColor Red
+            Read-Host 'Press Enter to exit'
+            exit 1
+        }
+        else {
+            Write-Host "[INFO] CPU PyTorch in use: $($torchVer.Trim())" -ForegroundColor Cyan
         }
     }
 }
@@ -496,10 +512,10 @@ Install-PipIfNeeded
 # ASR_SETUP_SKIP_INSTALL=1 skips PyTorch/dependency installation (CI smoke-test hook)
 if (-not $env:ASR_SETUP_SKIP_INSTALL) {
     # 先由 Install-PyTorch 检测 GPU 并安装 GPU 或 CPU 版 torch（find-links for CUDA / PyPI for CPU），
-    # 再装其余依赖（torch/torchaudio/torchvision 已装，自动跳过，不重复下载）
-    # 返回值无需处理：失败时 Install-PyTorch 内部已回退并安装 CPU 版兜底
-    $null = Install-PyTorch
-    Install-Dependencies
+    # 再装其余依赖（Install-Dependencies 内已过滤 torch 三件套行，杜绝 --target 重复下载/覆盖）
+    # 返回值传入守卫：仅当本次装的是 cu124 而装完依赖后丢失 +cu124 时才判定降级并阻断
+    $cudaTorch = Install-PyTorch
+    Install-Dependencies -CudaTorchInstalled $cudaTorch
 }
 New-Directories
 Select-ModelSource

@@ -13,7 +13,7 @@ name: Windows Portable (AMD64 + CUDA)
 #   3. 改写 _pth 启用 portable 模式（与 setup.ps1 Repair-EmbeddedPth 一致）
 #   4. 安装 pip 到 lib\site-packages
 #   5. 安装 CUDA PyTorch 全家桶（torch 2.6.0+cu124）
-#   6. 安装 requirements.txt 其余依赖（torch 已满足自动跳过）
+#   6. 安装 requirements.txt 其余依赖（先过滤 torch 三件套行，防 CPU 版重复下载）
 #   7. 下载 ffmpeg（bin\ffmpeg.exe + bin\ffprobe.exe）
 #   8. 冒烟验证：import torch/funasr/qwen_asr + pip check
 #   9. 7z 打包（排除 models/data/logs 等运行时目录；.pip_cache 打包前删除）
@@ -126,14 +126,21 @@ jobs:
           }
           Write-Host "torch: $ver"
 
-      # ── 6. 其余依赖（requirements 已 pin torch==2.6.0：已装 cu124 满足基版本
-      #  即自动跳过，杜绝加速依赖链拉入 CPU torch 覆盖） ──────────────
+      # ── 6. 其余依赖（先过滤 torch 三件套行再装） ─────────────────
+      # pip --target 隐式忽略已安装包，不存在"已装 cu124 满足 ==2.6.0 即跳过"；
+      # 不过滤会白下 ~200MB CPU wheel 并留下重复 dist-info，仅靠"目标目录已有
+      # 文件不覆盖"的实现细节才保住 cu124。过滤后彻底消除该依赖路径。
       - name: Install remaining dependencies
         env:
           PIP_CACHE_DIR: ${{ runner.temp }}\pip-cache
         run: |
           $ErrorActionPreference = 'Stop'
-          & bin\python\python.exe -m pip install -r requirements.txt `
+          $filtered = Join-Path $env:RUNNER_TEMP 'requirements-no-torch.txt'
+          Get-Content requirements.txt |
+            Where-Object { $_ -notmatch '^\s*torch(audio|vision)?==' } |
+            Set-Content $filtered
+          Write-Host "torch lines filtered, installing from $filtered"
+          & bin\python\python.exe -m pip install -r $filtered `
             --index-url https://pypi.org/simple `
             --target lib\site-packages
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }

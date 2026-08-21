@@ -254,6 +254,9 @@ if %errorlevel%==0 (
     )
 )
 
+:: 本次运行是否安装了 CUDA 版 torch（供步骤 8 条件化降级守卫使用）
+set CUDA_TORCH=0
+
 :: CI smoke-test hook: skip PyTorch/dependency installation (see windows-scripts-smoke.yml)
 if defined ASR_SETUP_SKIP_INSTALL goto :model_select
 
@@ -262,6 +265,7 @@ if "%PYTHON_MODE%"=="portable" (
     %PYTHON_BIN% -c "import torch; print(torch.__version__); exit(0 if '+cu124' in torch.__version__ else 1)"
     if not errorlevel 1 (
         echo [INFO] CUDA PyTorch already installed, skipping
+        set CUDA_TORCH=1
         goto :skip_torch
     ) else (
         echo [INFO] Proceeding to install PyTorch (not found or not cu124)
@@ -311,15 +315,18 @@ if not "!TORCH_OK!"=="1" (
     exit /b 1
 )
 echo [INFO] PyTorch installed
+if "%HAS_GPU%"=="1" set CUDA_TORCH=1
 
 :skip_torch
 :: 7. Install other dependencies
 echo.
 echo [INFO] Installing project dependencies...
 
-:: requirements.txt 已 pin torch==2.6.0 等基版本：已装 cu124（2.6.0+cu124 满足 ==2.6.0）
-:: pip 即判定满足自动跳过，不会因加速依赖（torch>=2.0.0）重新解析 CPU 版覆盖
-%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% -r requirements.txt --index-url %PIP_INDEX% --retries 5 --timeout 120
+:: pip --target 隐式忽略已安装包，不会因已装 cu124 而跳过 torch==2.6.0，
+:: 会白下 ~200MB CPU wheel 并留下重复 dist-info；先过滤 torch 三件套行再装。
+:: torch 必然已由上方步骤装好（CUDA 或 CPU），过滤不会缺依赖。
+findstr /V /R /C:"^torch==" /C:"^torchaudio==" /C:"^torchvision==" requirements.txt > "%TEMP%\asr-requirements-no-torch.txt"
+%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% -r "%TEMP%\asr-requirements-no-torch.txt" --index-url %PIP_INDEX% --retries 5 --timeout 120
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed
     pause
@@ -327,15 +334,19 @@ if errorlevel 1 (
 )
 echo [INFO] Dependencies installed
 
-:: 8. Assert torch is still CUDA (防 requirements.txt 降级)
+:: 8. Assert torch is still CUDA (仅本次装过 cu124 时阻断；CPU 场景正常放行)
 if "%PYTHON_MODE%"=="portable" (
     %PYTHON_BIN% -c "import torch; exit(0 if '+cu124' in torch.__version__ else 1)" 2>nul
     if not errorlevel 1 (
         echo [INFO] CUDA PyTorch confirmed
+    ) else if "%CUDA_TORCH%"=="1" (
+        echo [ERROR] CUDA PyTorch was downgraded to non-CUDA version after dependency install
+        echo [ERROR] Re-run setup.bat to reinstall the cu124 wheels
+        %PYTHON_BIN% -c "import torch; print('Actual: ' + torch.__version__)" 2>nul
+        pause
+        exit /b 1
     ) else (
-        echo [WARN] torch was downgraded to non-CUDA version after dependency install
-        echo [INFO] Expected: torch.__version__ containing '+cu124'
-        %PYTHON_BIN% -c "import torch; print('Actual: ' + torch.__version__)"
+        echo [INFO] CPU PyTorch in use, skipping CUDA assertion
     )
 )
 

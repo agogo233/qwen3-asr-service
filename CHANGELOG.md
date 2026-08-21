@@ -6,6 +6,7 @@
 ## [Unreleased]
 
 ### 修复
+- **pip `--target` 隐式忽略已安装包，cu124 torch 被冗余下载的 CPU 版覆盖/污染**：`pip install --target` 解析时不查询已装版本（叠加 `--upgrade` 还会强制覆盖目标目录已有文件），requirements.txt 的 torch 三行 pin 并不能"已装即跳过"——CI 构建每次白下 ~200MB CPU wheel 并留下重复 dist-info；manage.ps1「更新依赖」因带 `--upgrade` 更会把已装 cu124 真正降级覆盖为 CPU 版。setup.ps1 / setup.bat / manage.ps1 / windows-portable.yml 统一改为：安装项目依赖前过滤 `torch==` / `torchaudio==` / `torchvision==` 三行（torch 三件套由 GPU 探测步骤专职安装，manage.ps1 无 GPU 与 CUDA 失败分支显式补装 CPU 兜底）；降级守卫条件化——仅当本次确实装了 cu124 而装完依赖后丢失 `+cu124` 才报错阻断，无 GPU 的 CPU 场景正常放行。
 - **Windows portable 模式下 `start.bat` 报 `No module named 'app'`**：Embeddable Python 的 `python312._pth` 开启隔离模式后忽略 `PYTHONPATH`，且 `-m` 不再把当前目录加入 `sys.path`。在全部 4 处 `_pth` 写入模板中增加 `..\..`（相对 `bin\python\` 指向项目根），使 `app` 包可导入；覆盖 setup.bat / setup.ps1 / manage.ps1 / CI windows-portable.yml。
 - **torch 安装混合 CPU/CUDA 文件导致循环导入崩溃**：`--target` 安装不卸载旧文件，残留的混合文件会导致 `cannot import name 'data' from partially initialized module 'torch.utils'`。在步骤 7 装 cu124 前清理 `lib\site-packages\torch*`、`torchaudio*`、`torchvision*`、`functorch` 相关目录，确保全新安装；仅当 torch 缺失/损坏/非 cu124 时触发清理与重装，健康 cu124 直接跳过不再重复下载（附 2.5GB 提示与 `.pip_cache` 缓存说明）。
 - **CI 构建与本地 setup 因 accelerate 依赖 `torch>=2.0.0` 拉入 CPU torch 2.13.0 覆盖 dist-info 导致 smoke test 失败 / import 崩溃**：恢复 requirements.txt 中 `torch==2.6.0`、`torchaudio==2.6.0`、`torchvision==0.21.0` 三行基版本 pin（commit d559d79 删除的）。已装 cu124 的 `2.6.0+cu124` 满足 `==2.6.0`（PEP440 local 段不参与 `==` 匹配）→ pip 自动跳过，加速依赖链不会再从 PyPI 下载 CPU 版覆盖。同步修正 setup.bat/setup.ps1 CPU 安装分支也使用基版本 pin，与 requirements 一致。
