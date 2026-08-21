@@ -112,13 +112,20 @@ jobs:
           }
           Write-Host "torch: $ver"
 
-      # ── 6. 其余依赖 ──────────────────────────────────────────────
+      # ── 6. 其余依赖（含约束：防加速等依赖链拉入 CPU torch 覆盖 dist-info）─
       - name: Install remaining dependencies
         run: |
           $ErrorActionPreference = 'Stop'
+          @"
+          torch==2.6.0+cu124
+          torchaudio==2.6.0+cu124
+          torchvision==0.21.0+cu124
+          "@ | Out-File -Encoding ASCII $env:TEMP\cu124-constraints.txt
           & bin\python\python.exe -m pip install -r requirements.txt `
             --index-url https://pypi.org/simple `
-            --target lib\site-packages --no-cache-dir
+            --target lib\site-packages --no-cache-dir `
+            --find-links https://download.pytorch.org/whl/cu124 `
+            -c $env:TEMP\cu124-constraints.txt
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
           $ver = & bin\python\python.exe -c "import torch; print(torch.__version__)" 2>&1
           if ($ver -notlike '*+cu124*') {

@@ -374,7 +374,7 @@ if "%HAS_GPU%"=="1" (
 ) else (
     if exist "pip-constraints-cu124.txt" del /q "pip-constraints-cu124.txt"
 )
-%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% !PIP_CONSTRAINT! -r requirements.txt --index-url %PIP_INDEX% --retries 5 --timeout 120
+%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% !PIP_CONSTRAINT! -r requirements.txt --index-url %PIP_INDEX% --find-links "%TORCH_INDEX%" --retries 5 --timeout 120
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed
     pause

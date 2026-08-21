@@ -9,6 +9,7 @@
 - **Windows portable 模式下 `start.bat` 报 `No module named 'app'`**：Embeddable Python 的 `python312._pth` 开启隔离模式后忽略 `PYTHONPATH`，且 `-m` 不再把当前目录加入 `sys.path`。在全部 4 处 `_pth` 写入模板中增加 `..\..`（相对 `bin\python\` 指向项目根），使 `app` 包可导入；覆盖 setup.bat / setup.ps1 / manage.ps1 / CI windows-portable.yml。
 - **torch 安装混合 CPU/CUDA 文件导致循环导入崩溃**：`--target` 安装不卸载旧文件，残留的混合文件会导致 `cannot import name 'data' from partially initialized module 'torch.utils'`。在步骤 7 装 cu124 前清理 `lib\site-packages\torch*`、`torchaudio*`、`torchvision*`、`functorch` 相关目录，确保全新安装；仅当 torch 缺失/损坏/非 cu124 时触发清理与重装，健康 cu124 直接跳过不再重复下载（附 2.5GB 提示与 `.pip_cache` 缓存说明）。
 - **requirements 步骤偶发把 CUDA torch 降级为 CPU 版**：新增 `pip-constraints-cu124.txt`（GPU 模式自动生成），pin `torch==2.6.0+cu124` 等三件套，防止依赖解析意外拉回 CPU 版。同步更新 .gitignore 与 troubleshooting 文档。
+- **CI 构建因 `accelerate` 依赖 `torch>=2.0.0` 拉入 CPU torch 2.13.0 覆盖 dist-info 导致 smoke test 失败**：CI workflow 步骤 6 安装其余依赖时，缺少约束导致 pip 从 PyPI 下载 torch 2.13.0 CPU 版的 dist-info 覆盖进 target，与既有的 cu124 2.6.0 模块不匹配。在步骤 6 增加 `-c` 约束文件（pin cu124 三件套）与 `--find-links` 指向 cu124 镜像；setup.bat 步骤 8 同步补上 `--find-links` 参数。
 
 ## [2.4.1] - 2026-07-24
 
