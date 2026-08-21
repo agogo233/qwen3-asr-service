@@ -43,9 +43,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -73,7 +73,7 @@ jobs:
         shell: cmd
         working-directory: asr-service
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ── 模拟便携包：Embeddable Python + lib\site-packages + 假 torch 桩 ──
       - name: Prepare fake portable environment

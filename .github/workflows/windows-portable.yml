@@ -36,7 +36,7 @@ jobs:
         working-directory: asr-service
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ── 1. 清理工具缓存 ──────────────────────────────────────────
       - name: Free disk space
@@ -54,7 +54,7 @@ jobs:
 
       # ── 1.5 pip wheel 缓存（torch cu124 wheel ~2.5GB + 全量依赖，命中免重下）─
       - name: Cache pip wheels
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}\pip-cache
           key: pip-win-${{ hashFiles('asr-service/requirements.txt') }}-cu124
@@ -200,7 +200,7 @@ jobs:
           Write-Host "C: free $([math]::Round($disk.Free / 1GB, 1)) GB"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.package.outputs.zip_name }}
           path: ${{ github.workspace }}/${{ steps.package.outputs.zip_name }}
