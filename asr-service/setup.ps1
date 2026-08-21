@@ -25,6 +25,28 @@ $script:TorchIndex = if ($env:TORCH_INDEX_URL) { $env:TORCH_INDEX_URL } else { '
 # Functions (must be defined before use in PowerShell)
 # ============================================================
 
+function Invoke-Probe {
+    # Best-effort native probe for use under $ErrorActionPreference='Stop'.
+    # PS5.1 escalates a native command's stderr to a terminating
+    # NativeCommandError when output is redirected (pipe/Tee/CI capture);
+    # probes here expect failure and only inspect stdout/$LASTEXITCODE,
+    # so run them with EAP temporarily downgraded and stderr discarded.
+    # Returns joined stdout text; caller checks $LASTEXITCODE.
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$ArgumentList = @()
+    )
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $FilePath @ArgumentList 2>$null
+        return ($out -join "`n")
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
 function Show-PortableGuide {
     Write-Host
     Write-Host '[INFO] Please download the portable package from:' -ForegroundColor Cyan
@@ -78,7 +100,7 @@ function Initialize-Venv {
     }
 
     # Check version
-    $pyVer = & $sysPython -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>$null
+    $pyVer = Invoke-Probe $sysPython @('-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
     Write-Host "[INFO] Detected system Python version: $pyVer" -ForegroundColor Cyan
 
     if ($pyVer -ne '3.12') {
@@ -117,7 +139,7 @@ function Initialize-Venv {
 
     # Upgrade pip in venv
     Write-Host '[INFO] Upgrading pip...' -ForegroundColor Cyan
-    & $script:PythonBin -m pip install --upgrade pip --index-url $script:PypiIndex 2>$null
+    Invoke-Probe $script:PythonBin @('-m', 'pip', 'install', '--upgrade', 'pip', '--index-url', $script:PypiIndex) | Out-Null
 }
 
 function Repair-EmbeddedPth {
@@ -135,7 +157,7 @@ function Repair-EmbeddedPth {
     Write-Host "[INFO] $($pth.Name) fixed" -ForegroundColor Green
 
     # Verify interpreter still works
-    & $script:PythonBin -V 2>$null
+    Invoke-Probe $script:PythonBin @('-V') | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[ERROR] _pth rewrite broke Python interpreter; restoring backup' -ForegroundColor Red
         Copy-Item "$($pth.FullName).bak" $pth.FullName -Force
@@ -148,7 +170,7 @@ function Install-PipIfNeeded {
     if ($script:PythonMode -ne 'portable') { return }
 
     # Check pip via "python -m pip" first
-    & $script:PythonBin -m pip --version 2>$null | Out-Null
+    Invoke-Probe $script:PythonBin @('-m', 'pip', '--version') | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Write-Host '[INFO] pip already installed' -ForegroundColor Green
         return
@@ -211,7 +233,7 @@ function Install-PyTorch {
     }
 
     # 跳过检查：已装 cu124 版 → 无需重装
-    $torchVer = & $script:PythonBin -c "import torch; print(torch.__version__)" 2>$null
+    $torchVer = Invoke-Probe $script:PythonBin @('-c', 'import torch; print(torch.__version__)')
     if ($LASTEXITCODE -eq 0 -and $torchVer -like '*+cu124*') {
         Write-Host '[INFO] CUDA PyTorch already installed (' -NoNewline -ForegroundColor Cyan
         Write-Host $torchVer.Trim() -NoNewline -ForegroundColor White
@@ -256,7 +278,7 @@ function Install-PyTorch {
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         }
         else {
-            & $script:PythonBin -m pip uninstall -y torch torchaudio torchvision 2>$null
+            Invoke-Probe $script:PythonBin @('-m', 'pip', 'uninstall', '-y', 'torch', 'torchaudio', 'torchvision') | Out-Null
         }
         Write-Host '[INFO] Installing CPU PyTorch as fallback...' -ForegroundColor Yellow
         $cpuArgs = @('-m', 'pip', 'install') + $script:PipTarget + @(
@@ -270,7 +292,7 @@ function Install-PyTorch {
     Write-Host '[INFO] CUDA PyTorch installed' -ForegroundColor Green
 
     # 装后自检：CUDA 可用性
-    $cudaOk = & $script:PythonBin -c "import torch; print(torch.cuda.is_available())" 2>$null
+    $cudaOk = Invoke-Probe $script:PythonBin @('-c', 'import torch; print(torch.cuda.is_available())')
     if ($cudaOk -notmatch 'True') {
         Write-Host '[WARN] CUDA PyTorch is installed but torch.cuda.is_available() returns False.' -ForegroundColor Yellow
         Write-Host '       This may indicate an outdated NVIDIA driver. Please update your driver.' -ForegroundColor Yellow
@@ -297,7 +319,7 @@ function Install-Dependencies {
     }
 
     if ($script:PythonMode -eq 'portable') {
-        $torchVer = & $script:PythonBin -c "import torch; print(torch.__version__)" 2>$null
+        $torchVer = Invoke-Probe $script:PythonBin @('-c', 'import torch; print(torch.__version__)')
         if ($LASTEXITCODE -eq 0 -and $torchVer -like '*+cu124*') {
             Write-Host '[INFO] CUDA PyTorch confirmed' -ForegroundColor Green
         } else {
@@ -392,12 +414,7 @@ function Show-SetupComplete {
     # Self-check (portable mode only): verify torch and funasr importable
     if ($script:PythonMode -eq 'portable') {
         Write-Host '[INFO] Verifying installation...' -ForegroundColor Cyan
-        # PS5.1 陷阱：EAP=Stop 时重定向下的原生命令 stderr 会升级为终止性
-        # NativeCommandError；此处探测失败仅需告警，临时降级 EAP
-        $prevEap = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        & $script:PythonBin -c "import torch, funasr; print(torch.__version__)" 2>$null
-        $ErrorActionPreference = $prevEap
+        Invoke-Probe $script:PythonBin @('-c', 'import torch, funasr; print(torch.__version__)') | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host '[INFO] Installation verified: torch and funasr are importable' -ForegroundColor Green
         }
@@ -432,7 +449,7 @@ $portableDetected = (Test-Path $portableBin) -and (Test-Path $portableLib)
 
 if ($portableDetected) {
     # Verify python.exe is executable
-    & $portableBin -V 2>$null | Out-Null
+    Invoke-Probe $portableBin @('-V') | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Write-Host '[INFO] Portable Python environment detected, using portable mode' -ForegroundColor Cyan
         $script:PythonMode = 'portable'

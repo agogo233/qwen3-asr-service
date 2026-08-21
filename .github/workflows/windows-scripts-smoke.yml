@@ -120,6 +120,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Copy-Item bin\python\python312._pth.bak bin\python\python312._pth -Force
+          # 删除 pip 模拟全新便携包：强制走 Install-PipIfNeeded 的 get-pip
+          # 下载安装分支（回归 PS5.1 stderr 升级修复，见 Invoke-Probe）
+          Remove-Item lib\site-packages\pip* -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item bin\get-pip.py -Force -ErrorAction SilentlyContinue
           cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 < nul > ps1_out.txt 2>&1"
           if ($LASTEXITCODE -ne 0) { Get-Content ps1_out.txt; throw "setup.ps1 failed" }
           $out = Get-Content ps1_out.txt -Raw
