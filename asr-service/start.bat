@@ -1,9 +1,10 @@
 @echo off
 chcp 65001 >nul 2>&1
+setlocal
 cd /d "%~dp0"
 
-set PYTHONPATH=%~dp0
-set PATH=%~dp0bin;%~dp0bin\python;%PATH%
+set "PYTHONPATH=%~dp0"
+set "PATH=%~dp0bin;%~dp0bin\python;%PATH%"
 
 :: Detect Python environment: portable first, then venv
 set PYTHON_BIN=
