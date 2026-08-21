@@ -306,6 +306,7 @@ if "%PYTHON_MODE%"=="portable" (
     %PYTHON_BIN% -c "import torch; print(torch.__version__); exit(0 if '+cu124' in torch.__version__ else 1)"
     if not errorlevel 1 (
         echo [INFO] CUDA PyTorch already installed, skipping
+        goto :skip_torch
     ) else (
         echo [INFO] Proceeding to install PyTorch (not found or not cu124)
     )
@@ -319,7 +320,7 @@ echo [INFO] Installing PyTorch 2.6.0 (this may take several minutes)...
 if "%PYTHON_MODE%"=="portable" (
     for %%P in (torch torchaudio torchvision functorch) do (
         if exist "lib\site-packages\%%P" (
-            echo [INFO] Removing existing %%P installation...
+            echo [WARN] Existing %%P is broken or not cu124 - removing it, a clean wheel will be re-downloaded
             rmdir /s /q "lib\site-packages\%%P"
         )
     )
@@ -328,6 +329,7 @@ if "%PYTHON_MODE%"=="portable" (
         rmdir /s /q "%%D"
     )
 )
+if "%HAS_GPU%"=="1" echo [INFO] CUDA wheel is about 2.5 GB - keep this window open; finished downloads are cached in .pip_cache for fast re-runs
 
 :: pip cache directory for faster reinstallation
 set "PIP_CACHE_DIR=%CD%\.pip_cache"
@@ -354,6 +356,7 @@ if not "!TORCH_OK!"=="1" (
 )
 echo [INFO] PyTorch installed
 
+:skip_torch
 :: 8. Install other dependencies
 echo.
 echo [INFO] Installing project dependencies...
