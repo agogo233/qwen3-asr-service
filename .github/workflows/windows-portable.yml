@@ -35,9 +35,6 @@ jobs:
         shell: pwsh
         working-directory: asr-service
 
-    env:
-      PIP_CACHE_DIR: ${{ runner.temp }}\pip-cache
-
     steps:
       - uses: actions/checkout@v4
 
@@ -99,6 +96,8 @@ jobs:
 
       # ── 4. 安装 pip 到 lib\site-packages ──────────────────────────
       - name: Install pip
+        env:
+          PIP_CACHE_DIR: ${{ runner.temp }}\pip-cache
         run: |
           $ErrorActionPreference = 'Stop'
           curl.exe -fsSL -o bin\get-pip.py https://bootstrap.pypa.io/get-pip.py
@@ -111,6 +110,8 @@ jobs:
 
       # ── 5. CUDA PyTorch（cu124） ─────────────────────────────────
       - name: Install CUDA PyTorch
+        env:
+          PIP_CACHE_DIR: ${{ runner.temp }}\pip-cache
         run: |
           $ErrorActionPreference = 'Stop'
           & bin\python\python.exe -m pip install `
@@ -127,6 +128,8 @@ jobs:
       # ── 6. 其余依赖（requirements 已 pin torch==2.6.0：已装 cu124 满足基版本
       #  即自动跳过，杜绝加速依赖链拉入 CPU torch 覆盖） ──────────────
       - name: Install remaining dependencies
+        env:
+          PIP_CACHE_DIR: ${{ runner.temp }}\pip-cache
         run: |
           $ErrorActionPreference = 'Stop'
           & bin\python\python.exe -m pip install -r requirements.txt `
