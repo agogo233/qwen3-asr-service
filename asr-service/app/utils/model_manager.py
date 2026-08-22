@@ -4,6 +4,14 @@ from app.config import MODEL_SOURCE
 
 logger = logging.getLogger(__name__)
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def _ensure_modelscope_cache():
+    cache_dir = os.path.join(_PROJECT_ROOT, "models", ".cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ.setdefault("MODELSCOPE_CACHE", cache_dir)
+    os.environ.setdefault("MODELSCOPE_HOME", cache_dir)
+
 
 def ensure_model(repo_id: str, local_dir: str):
     """
@@ -24,6 +32,7 @@ def ensure_model(repo_id: str, local_dir: str):
     os.makedirs(local_dir, exist_ok=True)
 
     if MODEL_SOURCE == "modelscope":
+        _ensure_modelscope_cache()
         from modelscope import snapshot_download
         snapshot_download(
             model_id=repo_id,
@@ -119,6 +128,7 @@ def ensure_model_modelscope(repo_id: str, local_dir: str):
     logger.info(f"开始下载模型 [modelscope]: {repo_id} -> {local_dir}")
     os.makedirs(local_dir, exist_ok=True)
 
+    _ensure_modelscope_cache()
     from modelscope import snapshot_download
     snapshot_download(
         model_id=repo_id,

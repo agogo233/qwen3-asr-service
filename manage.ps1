@@ -51,9 +51,20 @@ $script:HasPortable = $false
 $script:PortablePythonVersion = ''
 $script:ActiveComposeVariant = 'gpu'
 
-# pip 镜像（可用环境变量覆盖；国内默认走清华 PyPI / 阿里云 pytorch-wheels）
+# pip 镜像（可用环境变量覆盖；国内默认走清华 PyPI；torch 源按 上交→阿里云→官方 顺序尝试）
 $script:PypiIndex = if ($env:PIP_INDEX_URL) { $env:PIP_INDEX_URL } else { 'https://pypi.tuna.tsinghua.edu.cn/simple' }
-$script:TorchIndex = if ($env:TORCH_INDEX_URL) { $env:TORCH_INDEX_URL } else { 'https://mirrors.aliyun.com/pytorch-wheels/cu124' }
+
+# 有序 torch 安装源（逐个尝试，每源失败自动重试一次）：
+#   所有源以 --find-links 引用 torch wheel，--index-url 指向 PyPI 镜像解析纯 Python 依赖
+# TORCH_INDEX_URL 环境变量最优先（兼容旧用法）
+$script:TorchSources = @(
+    'https://mirror.sjtu.edu.cn/pytorch-wheels/cu124',
+    'https://mirrors.aliyun.com/pytorch-wheels/cu124/',
+    'https://download.pytorch.org/whl/cu124'
+)
+if ($env:TORCH_INDEX_URL) {
+    $script:TorchSources = @($env:TORCH_INDEX_URL) + $script:TorchSources
+}
 
 # Launch config (defaults)
 $script:Launch = @{
@@ -837,12 +848,22 @@ function Portable-UpdateDeps {
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
             Write-Info '安装 CUDA 版 PyTorch...'
-            $cudaArgs = @('-m', 'pip', 'install') + $pipTarget + @(
-                'torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', 'torchvision==0.21.0+cu124',
-                '--index-url', $script:PypiIndex, '--find-links', $script:TorchIndex
-            )
-            & $pythonBin @cudaArgs
-            if ($LASTEXITCODE -eq 0) {
+            # 逐源尝试（上交→阿里云→官方），每源失败自动重试一次：
+            # 所有源以 --find-links 引用 torch wheel，--index-url 指向 PyPI 镜像解析纯 Python 依赖。
+            $cudaInstalled = $false
+            foreach ($src in $script:TorchSources) {
+                for ($attempt = 1; $attempt -le 2 -and -not $cudaInstalled; $attempt++) {
+                    Write-Info "尝试 PyTorch 源（第 $attempt/2 次）: $src"
+                    $cudaArgs = @('-m', 'pip', 'install') + $pipTarget + @(
+                        'torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', 'torchvision==0.21.0+cu124',
+                        '--index-url', $script:PypiIndex, '--find-links', $src,
+                        '--retries', '5', '--timeout', '120'
+                    )
+                    & $pythonBin @cudaArgs
+                    if ($LASTEXITCODE -eq 0) { $cudaInstalled = $true }
+                }
+            }
+            if ($cudaInstalled) {
                 Write-Ok 'CUDA 版 PyTorch 已安装'
                 $cudaExpected = $true
                 # 装后自检：CUDA 可用性
@@ -871,18 +892,13 @@ function Portable-UpdateDeps {
     }
 
     # Step 3: Update dependencies from requirements.txt
-    #    pip --target 隐式忽略已安装包（叠加 --upgrade 还会强制覆盖已有文件），
-    #    不过滤会把已装 cu124 真正覆盖为 ~200MB 的 CPU wheel；torch 三件套由
-    #    Step 2 统一负责，此处过滤后再装。
+    # --exclude 阻止传递依赖回拉 torch（如 accelerate→torch>=2.0.0），
+    # 已装的 cu124 三件套不受影响；--upgrade 安全升级其他依赖。
     $reqFile = Join-Path $ServiceDir 'requirements.txt'
     if (Test-Path $reqFile) {
         Write-Host
         Write-Info '更新项目依赖...'
-        $filteredReq = Join-Path $env:TEMP 'asr-requirements-no-torch.txt'
-        Get-Content $reqFile -Encoding UTF8 |
-            Where-Object { $_ -notmatch '^\s*torch(audio|vision)?==' } |
-            Set-Content $filteredReq -Encoding UTF8
-        $depArgs = @('-m', 'pip', 'install', '--upgrade') + $pipTarget + @('-r', $filteredReq, '--index-url', $script:PypiIndex)
+        $depArgs = @('-m', 'pip', 'install', '--upgrade') + $pipTarget + @('-r', $reqFile, '--index-url', $script:PypiIndex, '--exclude', 'torch', '--exclude', 'torchaudio', '--exclude', 'torchvision')
         & $pythonBin @depArgs
         if ($LASTEXITCODE -eq 0) {
             Write-Ok '项目依赖已更新'

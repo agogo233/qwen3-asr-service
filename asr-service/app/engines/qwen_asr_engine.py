@@ -66,7 +66,15 @@ class QwenASREngine:
                 logger.warning(f"对齐模型下载失败，降级为无对齐模式: {e}")
                 self._enable_align = False
 
-        self._model = Qwen3ASRModel.from_pretrained(**load_kwargs)
+        try:
+            self._model = Qwen3ASRModel.from_pretrained(**load_kwargs)
+        except ModuleNotFoundError as e:
+            if "GGUF_CONFIG_MAPPING" in str(e):
+                raise ModuleNotFoundError(
+                    "transformers 导入 GGUF_CONFIG_MAPPING 失败，通常因 tokenizers 缺失或版本不兼容。"
+                    "请执行: pip install 'tokenizers>=0.22.0,<=0.23.0'"
+                ) from e
+            raise
 
         # 抑制 transformers 每次 generate 时的 pad_token_id 警告
         logging.getLogger("transformers.generation.utils").setLevel(logging.ERROR)

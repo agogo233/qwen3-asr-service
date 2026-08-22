@@ -25,3 +25,6 @@ librosa
 # 模型管理
 huggingface_hub
 modelscope
+
+# tokenizers（transformers 传递依赖，显式声明确保版本兼容）
+tokenizers>=0.22.0,<=0.23.0

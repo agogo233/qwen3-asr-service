@@ -239,36 +239,28 @@ nvidia-smi >nul 2>&1
 if %errorlevel%==0 (
     echo [INFO] NVIDIA GPU detected, will install CUDA PyTorch
     set HAS_GPU=1
-    if "!TORCH_INDEX_URL!"=="" (
-        set TORCH_INDEX=https://mirrors.aliyun.com/pytorch-wheels/cu124
-    ) else (
-        set TORCH_INDEX=!TORCH_INDEX_URL!
-    )
 ) else (
     echo [WARN] No GPU detected, will install CPU PyTorch
     set HAS_GPU=0
-    if "!TORCH_INDEX_URL!"=="" (
-        set TORCH_INDEX=https://mirrors.aliyun.com/pytorch-wheels/cpu
-    ) else (
-        set TORCH_INDEX=!TORCH_INDEX_URL!
-    )
 )
 
-:: 本次运行是否安装了 CUDA 版 torch（供步骤 8 条件化降级守卫使用）
+:: Track whether CUDA torch was installed in this session (step 8 conditional downgrade guard)
 set CUDA_TORCH=0
 
 :: CI smoke-test hook: skip PyTorch/dependency installation (see windows-scripts-smoke.yml)
 if defined ASR_SETUP_SKIP_INSTALL goto :model_select
 
-:: 5. Skip PyTorch if already installed (portable mode — CI 预装 cu124 免重下)
+:: 5. Skip PyTorch if already installed (portable mode — CI pre-installs cu124, avoid re-download)
+:: On detection failure (missing/corrupt/non-cu124), suppress traceback, show friendly message, then reinstall
 if "%PYTHON_MODE%"=="portable" (
-    %PYTHON_BIN% -c "import torch; print(torch.__version__); exit(0 if '+cu124' in torch.__version__ else 1)"
+    %PYTHON_BIN% -c "import torch; print(torch.__version__); exit(0 if '+cu124' in torch.__version__ else 1)" 2>nul
     if not errorlevel 1 (
         echo [INFO] CUDA PyTorch already installed, skipping
         set CUDA_TORCH=1
         goto :skip_torch
     ) else (
-        echo [INFO] Proceeding to install PyTorch (not found or not cu124)
+        echo [WARN] Built-in PyTorch is missing, corrupted or not cu124
+        echo [INFO] It will be removed and reinstalled cleanly, please wait...
     )
 )
 
@@ -301,16 +293,32 @@ if "%HAS_GPU%"=="1" (
 ) else (
     set "PIP_TORCH_ARGS=torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0"
 )
-for %%M in ("%TORCH_INDEX%" "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cu124" "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cpu") do (
+
+:: Ordered source list, try each one, auto-retry once on failure:
+::   All sources use --find-links for torch wheels, --index-url always points to PyPI mirror for pure-Python deps
+:: TORCH_INDEX_URL env var takes precedence (backward compat); CPU mode skips torch mirrors, uses PyPI directly
+if "%HAS_GPU%"=="1" (
+    set "TORCH_SOURCES=https://mirror.sjtu.edu.cn/pytorch-wheels/cu124 https://mirrors.aliyun.com/pytorch-wheels/cu124/ https://download.pytorch.org/whl/cu124"
+) else (
+    set "TORCH_SOURCES="
+)
+if defined TORCH_INDEX_URL set "TORCH_SOURCES=%TORCH_INDEX_URL% %TORCH_SOURCES%"
+
+for %%M in (!TORCH_SOURCES!) do (
     if not "!TORCH_OK!"=="1" (
-        echo [INFO] Trying PyTorch mirror: %%~M
-        %PYTHON_BIN% -m pip install !PIP_TGT_ARGS! !PIP_TORCH_ARGS! --index-url %PIP_INDEX% --find-links "%%~M" --retries 5 --timeout 120
-        if not errorlevel 1 set TORCH_OK=1
+        for /l %%R in (1,1,2) do (
+            if not "!TORCH_OK!"=="1" (
+                echo [INFO] Trying PyTorch source ^(attempt %%R/2^): %%~M
+                %PYTHON_BIN% -m pip install !PIP_TGT_ARGS! !PIP_TORCH_ARGS! --index-url %PIP_INDEX% --find-links "%%~M" --retries 5 --timeout 120
+                if not errorlevel 1 set TORCH_OK=1
+            )
+        )
     )
 )
 if not "!TORCH_OK!"=="1" (
     echo [ERROR] PyTorch installation failed
-    echo [INFO] Tried all configured mirrors. If network is blocked, set TORCH_INDEX_URL to a custom mirror.
+    echo [INFO] Tried all configured sources: SJTU / Aliyun / PyTorch official.
+    echo [INFO] Check your network, or set TORCH_INDEX_URL to a custom mirror and re-run.
     pause
     exit /b 1
 )
@@ -322,11 +330,9 @@ if "%HAS_GPU%"=="1" set CUDA_TORCH=1
 echo.
 echo [INFO] Installing project dependencies...
 
-:: pip --target 隐式忽略已安装包，不会因已装 cu124 而跳过 torch==2.6.0，
-:: 会白下 ~200MB CPU wheel 并留下重复 dist-info；先过滤 torch 三件套行再装。
-:: torch 必然已由上方步骤装好（CUDA 或 CPU），过滤不会缺依赖。
-findstr /V /R /C:"^torch==" /C:"^torchaudio==" /C:"^torchvision==" requirements.txt > "%TEMP%\asr-requirements-no-torch.txt"
-%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% -r "%TEMP%\asr-requirements-no-torch.txt" --index-url %PIP_INDEX% --retries 5 --timeout 120
+:: --exclude prevents transitive deps from pulling in torch (e.g. accelerate->torch>=2.0.0),
+:: already-installed cu124 torch/torchaudio/torchvision are unaffected; torch pins in requirements.txt are also skipped
+%PYTHON_BIN% -m pip install %PIP_TGT_ARGS% -r requirements.txt --index-url %PIP_INDEX% --exclude torch --exclude torchaudio --exclude torchvision --retries 5 --timeout 120
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed
     pause
@@ -334,7 +340,7 @@ if errorlevel 1 (
 )
 echo [INFO] Dependencies installed
 
-:: 8. Assert torch is still CUDA (仅本次装过 cu124 时阻断；CPU 场景正常放行)
+:: 8. Assert torch is still CUDA (only when cu124 was installed this session; CPU scenario passes through)
 if "%PYTHON_MODE%"=="portable" (
     %PYTHON_BIN% -c "import torch; exit(0 if '+cu124' in torch.__version__ else 1)" 2>nul
     if not errorlevel 1 (

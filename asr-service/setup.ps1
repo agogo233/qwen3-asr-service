@@ -17,9 +17,20 @@ $script:PythonBin = ''
 $script:PipTarget = @()
 $script:ModelSource = ''
 
-# pip 镜像（可用环境变量覆盖；国内默认走清华 PyPI / 阿里云 pytorch-wheels）
+# pip 镜像（可用环境变量覆盖；国内默认走清华 PyPI；torch 源按 上交→阿里云→官方 顺序尝试）
 $script:PypiIndex = if ($env:PIP_INDEX_URL) { $env:PIP_INDEX_URL } else { 'https://pypi.tuna.tsinghua.edu.cn/simple' }
-$script:TorchIndex = if ($env:TORCH_INDEX_URL) { $env:TORCH_INDEX_URL } else { 'https://mirrors.aliyun.com/pytorch-wheels/cu124' }
+
+# 有序 torch 安装源（逐个尝试，每源失败自动重试一次）：
+#   所有源均以 --find-links 引用 torch wheel，--index-url 始终指向 PyPI 镜像解析纯 Python 依赖
+# TORCH_INDEX_URL 环境变量最优先（兼容旧用法）
+$script:TorchSources = @(
+    'https://mirror.sjtu.edu.cn/pytorch-wheels/cu124',
+    'https://mirrors.aliyun.com/pytorch-wheels/cu124/',
+    'https://download.pytorch.org/whl/cu124'
+)
+if ($env:TORCH_INDEX_URL) {
+    $script:TorchSources = @($env:TORCH_INDEX_URL) + $script:TorchSources
+}
 
 # ============================================================
 # Functions (must be defined before use in PowerShell)
@@ -205,7 +216,7 @@ function Install-PipIfNeeded {
     Write-Host '[INFO] pip installed' -ForegroundColor Green
 }
 
-# 提前于 Install-Dependencies 调用：先检测 GPU，有 GPU 时通过 find-links 从 TorchIndex 镜像
+# 提前于 Install-Dependencies 调用：先检测 GPU，有 GPU 时按有序源列表（上交→阿里云→官方）
 # 安装 CUDA 版 torch/torchaudio/torchvision（带依赖）。torch 三件套统一由本函数负责：
 # 无 GPU 或安装失败时回退安装 CPU 版兜底并返回 $false；已装 cu124 时跳过返回 $true。
 function Install-PyTorch {
@@ -255,15 +266,23 @@ function Install-PyTorch {
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # 带依赖安装 CUDA 三件套：torch 的纯 Python 依赖从 PypiIndex 解析，torch wheel
-    # 从 TorchIndex 的 find-links 获取（aliyun 平铺页面，非 PEP 503 标准 index）。
-    $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @(
-        'torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', 'torchvision==0.21.0+cu124',
-        '--index-url', $script:PypiIndex, '--find-links', $script:TorchIndex
-    )
+    # 带依赖安装 CUDA 三件套：逐源尝试、每源失败自动重试一次。
+    # 所有源以 --find-links 引用 torch wheel，--index-url 指向 PyPI 镜像解析纯 Python 依赖。
+    $installed = $false
+    foreach ($src in $script:TorchSources) {
+        for ($attempt = 1; $attempt -le 2 -and -not $installed; $attempt++) {
+            Write-Host "[INFO] Trying PyTorch source (attempt $attempt/2): $src" -ForegroundColor Cyan
+            $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @(
+                'torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', 'torchvision==0.21.0+cu124',
+                '--index-url', $script:PypiIndex, '--find-links', $src,
+                '--retries', '5', '--timeout', '120'
+            )
+            & $script:PythonBin @pipArgs
+            if ($LASTEXITCODE -eq 0) { $installed = $true }
+        }
+    }
 
-    & $script:PythonBin @pipArgs
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $installed) {
         Write-Host
         Write-Host '[WARN] CUDA PyTorch installation failed, falling back to CPU version' -ForegroundColor Yellow
         # 回退清理
@@ -309,17 +328,11 @@ function Install-Dependencies {
         return
     }
 
-    # pip --target 隐式忽略已安装包（不会因已装 cu124 而跳过 torch==2.6.0），
-    # 会白下 ~200MB CPU wheel 并留下重复 dist-info；先过滤 torch 三件套行再装。
-    # torch 必然已由 Install-PyTorch 装好（cu124 或 CPU 兜底），过滤不会缺依赖。
-    $filteredReq = Join-Path $env:TEMP 'asr-requirements-no-torch.txt'
-    Get-Content $reqFile -Encoding UTF8 |
-        Where-Object { $_ -notmatch '^\s*torch(audio|vision)?==' } |
-        Set-Content $filteredReq -Encoding UTF8
-
+    # --exclude 阻止传递依赖回拉 torch（如 accelerate→torch>=2.0.0），
+    # 已装的 cu124 三件套不受影响；requirements.txt 中的 torch pin 行同被跳过。
     Write-Host
     Write-Host '[INFO] Installing project dependencies...' -ForegroundColor Cyan
-    $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @('-r', $filteredReq, '--index-url', $script:PypiIndex)
+    $pipArgs = @('-m', 'pip', 'install') + $script:PipTarget + @('-r', $reqFile, '--index-url', $script:PypiIndex, '--exclude', 'torch', '--exclude', 'torchaudio', '--exclude', 'torchvision')
     & $script:PythonBin @pipArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[ERROR] Dependency installation failed' -ForegroundColor Red
