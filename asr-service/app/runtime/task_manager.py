@@ -153,6 +153,41 @@ class TaskManager:
         event = self._cancel_events.get(task_id)
         return event.is_set() if event else False
 
+    def active_task_ids(self) -> set[str]:
+        """活跃任务（pending/processing）ID 集合（维护清理排除用）"""
+        with self._lock:
+            return {
+                task_id for task_id, t in self._tasks.items()
+                if t["status"] in ("pending", "processing")
+            }
+
+    def active_file_paths(self) -> set[str]:
+        """活跃任务的上传文件绝对路径集合（维护清理排除用）"""
+        with self._lock:
+            return {
+                os.path.abspath(t["file_path"])
+                for t in self._tasks.values()
+                if t.get("file_path") and t["status"] in ("pending", "processing")
+            }
+
+    def purge_finished(self) -> int:
+        """清除内存中全部终态任务（手动维护清理用），返回清除数。
+
+        仅清 completed/failed/cancelled；活跃任务的取消事件与等待方不受影响。
+        """
+        with self._lock:
+            finished = [
+                task_id for task_id, t in self._tasks.items()
+                if t["status"] in ("completed", "failed", "cancelled")
+            ]
+            for task_id in finished:
+                del self._tasks[task_id]
+                self._cancel_events.pop(task_id, None)
+                self._done_events.pop(task_id, None)
+        if finished:
+            logger.info(f"已清除 {len(finished)} 个内存终态任务")
+        return len(finished)
+
     def _remove_upload_file(self, task: dict) -> None:
         """删除任务上传文件（pending 取消/跳过时兜底清理；幂等，缺失静默）。
 

@@ -546,6 +546,11 @@ def _assemble_standard(app: FastAPI, args) -> None:
     app.include_router(build_offline_router("/v1", include_deprecated=True))
     app.include_router(build_offline_router("/v2"))
 
+    # 维护路由（仅 /v2）：存储清理统计与执行，standard/vllm 共用同一套
+    from app.api.maintenance_routes import init_maintenance, build_maintenance_router
+    init_maintenance(task_manager, task_store)
+    app.include_router(build_maintenance_router())
+
     # 声纹库路由（仅 /v2）：无条件挂载——未启用/降级时端点统一 503
     from app.api.speaker_routes import init_speaker_routes, build_speakers_router
     init_speaker_routes(speaker_service, tag_mismatch=speaker_tag_mismatch)
@@ -850,6 +855,11 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     init_routes(task_manager, task_store)
     app.include_router(build_offline_router("/v1", include_deprecated=True))
     app.include_router(build_offline_router("/v2"))
+
+    # 维护路由（仅 /v2）：存储清理统计与执行，standard/vllm 共用同一套
+    from app.api.maintenance_routes import init_maintenance, build_maintenance_router
+    init_maintenance(task_manager, task_store)
+    app.include_router(build_maintenance_router())
 
     # 声纹库路由（仅 /v2）：无条件挂载——未启用/降级时端点统一 503（与 standard 同）
     from app.api.speaker_routes import init_speaker_routes, build_speakers_router

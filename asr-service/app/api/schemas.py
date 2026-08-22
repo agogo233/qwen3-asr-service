@@ -134,3 +134,29 @@ class HealthResponse(BaseModel):
     punc_backend: str | None = None    # "pytorch" | "onnx"
     config_file: str | None = None     # 本次生效的配置文件名（None = 未加载配置文件）
     capabilities: CapabilitiesResponse | None = None
+
+
+class MaintenanceItem(BaseModel):
+    key: str                            # "orphan_uploads" | "stale_chunks" | "task_history" | "logs"
+    available: bool                     # 功能未启用（如任务持久化关闭）时为 False，不可清理
+    bytes: int = 0                      # 可清理部分占用字节数
+    files: int = 0                      # 可清理文件数（task_history 为记录条数）
+
+
+class MaintenanceStorageResponse(BaseModel):
+    items: list[MaintenanceItem]
+
+
+class MaintenanceCleanupRequest(BaseModel):
+    targets: list[str]                  # MaintenanceItem.key 子集，未知值返回 400
+
+
+class MaintenanceCleanupResult(BaseModel):
+    key: str
+    status: str                         # "cleaned" | "unavailable" | "error"
+    removed_files: int = 0              # 删除的文件数 / 历史记录数 / 内存任务数
+    freed_bytes: int = 0                # 释放字节数（task_history 为库收缩量估算，按删除前占用计）
+
+
+class MaintenanceCleanupResponse(BaseModel):
+    results: list[MaintenanceCleanupResult]

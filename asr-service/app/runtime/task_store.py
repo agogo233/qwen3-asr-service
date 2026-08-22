@@ -182,6 +182,34 @@ class TaskStore:
                 return []
         return [dict(r) for r in rows]
 
+    def purge_finished(self) -> int:
+        """清空全部终态历史记录并回收空间（维护清理用），返回删除行数。
+
+        仅删终态（finished_at 非空），进行中任务不受影响；复用 incremental_vacuum
+        回收空间（与 cleanup_expired 同款，避免全库 VACUUM 的锁库风险）。
+        """
+        with self._lock:
+            try:
+                cur = self._conn.execute("DELETE FROM tasks WHERE finished_at IS NOT NULL")
+                self._conn.commit()
+                if cur.rowcount:
+                    self._conn.execute("PRAGMA incremental_vacuum")
+                return cur.rowcount
+            except sqlite3.Error as e:
+                logger.warning(f"任务历史清空失败: {e}")
+                return -1
+
+    def count_finished(self) -> int | None:
+        """终态历史记录条数；库异常返回 None（容错契约）。"""
+        with self._lock:
+            try:
+                return self._conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE finished_at IS NOT NULL"
+                ).fetchone()[0]
+            except sqlite3.Error as e:
+                logger.warning(f"任务历史计数失败: {e}")
+                return None
+
     def delete_task(self, task_id: str) -> bool:
         """删除历史记录（DELETE /tasks/{id} 对终态任务的语义）。"""
         with self._lock:

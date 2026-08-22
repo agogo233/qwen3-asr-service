@@ -77,6 +77,18 @@
       // 任务详情弹窗
       'viewer.title': '任务详情：{0}',
       'viewer.taskId': '任务 ID', 'viewer.status': '状态', 'viewer.progress': '进度',
+      // 存储清理
+      'maint.title': '存储清理',
+      'maint.button': '清理',
+      'maint.desc': '勾选需要清理的项目；正在处理的任务文件会被自动跳过。',
+      'maint.orphanUploads': '孤儿上传文件', 'maint.staleChunks': '残留音频切片',
+      'maint.taskHistory': '任务历史记录', 'maint.logs': '服务日志',
+      'maint.unavailable': '未启用', 'maint.empty': '无待清理内容',
+      'maint.count': '{0} 项',
+      'maint.positive': '执行清理', 'maint.negative': '取消',
+      'maint.done': '清理完成，释放 {0}', 'maint.failed': '清理失败: {0}',
+      'maint.loadFailed': '存储统计加载失败: {0}',
+      'maint.noSelection': '请先选择要清理的项目',
     },
     en: {
       'meta.language': 'Language: {0}', 'meta.align': 'Align: {0}', 'meta.punc': 'Punctuation: {0}',
@@ -137,6 +149,17 @@
       'task.pollNote': 'Auto-refresh: 3s for running tasks, 30s when idle; includes persisted history',
       'viewer.title': 'Task details: {0}',
       'viewer.taskId': 'Task ID', 'viewer.status': 'Status', 'viewer.progress': 'Progress',
+      'maint.title': 'Storage cleanup',
+      'maint.button': 'Cleanup',
+      'maint.desc': 'Select items to clean; files of in-progress tasks are skipped automatically.',
+      'maint.orphanUploads': 'Orphan uploads', 'maint.staleChunks': 'Stale audio chunks',
+      'maint.taskHistory': 'Task history records', 'maint.logs': 'Service log',
+      'maint.unavailable': 'Not enabled', 'maint.empty': 'Nothing to clean',
+      'maint.count': '{0} item(s)',
+      'maint.positive': 'Clean up', 'maint.negative': 'Cancel',
+      'maint.done': 'Done, freed {0}', 'maint.failed': 'Cleanup failed: {0}',
+      'maint.loadFailed': 'Failed to load storage stats: {0}',
+      'maint.noSelection': 'Select at least one item to clean',
     },
   };
   const t = makeT(M);
@@ -645,6 +668,68 @@
         });
       }
 
+      // —— 存储清理（/v2/maintenance/*）——
+      const maint = reactive({ show: false, loading: false, cleaning: false, items: [], checked: {} });
+      const MAINT_LABEL_KEYS = {
+        orphan_uploads: 'maint.orphanUploads', stale_chunks: 'maint.staleChunks',
+        task_history: 'maint.taskHistory', logs: 'maint.logs',
+      };
+      const maintRows = computed(() => maint.items.map(it => ({
+        key: it.key,
+        label: t(MAINT_LABEL_KEYS[it.key] || it.key),
+        available: it.available,
+        hasContent: it.bytes > 0 || it.files > 0,
+        sizeText: [
+          it.bytes > 0 ? fmtBytes(it.bytes) : '',
+          it.files > 0 ? t('maint.count', it.files) : '',
+        ].filter(Boolean).join(' · '),
+      })));
+      async function openMaintenance() {
+        maint.show = true;
+        maint.loading = true;
+        try {
+          const res = await fetch('/v2/maintenance/storage', { headers: authHeaders() });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          maint.items = data.items || [];
+          // 默认勾选：纯垃圾项（孤儿上传/残留切片）；日志与历史记录需显式勾选
+          maint.checked = {};
+          for (const it of maint.items) {
+            maint.checked[it.key] = it.available
+              && (it.key === 'orphan_uploads' || it.key === 'stale_chunks')
+              && (it.bytes > 0 || it.files > 0);
+          }
+        } catch (e) {
+          maint.show = false;
+          message.error(t('maint.loadFailed', e.message));
+        } finally {
+          maint.loading = false;
+        }
+      }
+      async function doCleanup() {
+        const targets = maint.items.filter(it => maint.checked[it.key]).map(it => it.key);
+        if (!targets.length) { message.warning(t('maint.noSelection')); return; }
+        maint.cleaning = true;
+        try {
+          const res = await fetch('/v2/maintenance/cleanup', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ targets }),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          let freed = 0;
+          for (const r of data.results || []) freed += r.freed_bytes || 0;
+          message.success(t('maint.done', fmtBytes(freed)));
+          pokeListPoll();
+          maint.show = false;
+        } catch (e) {
+          message.error(t('maint.failed', e.message));
+        } finally {
+          maint.cleaning = false;
+        }
+      }
+
       // 英文表头更长（Processing/Progress 等）：列宽随语言取值，避免折行
       const wide = computed(() => locale.value === 'en');
       const columns = computed(() => [
@@ -681,6 +766,7 @@
         current, progressPct, submit, cancelTask, seekAudio,
         taskList, toggleTaskList, manualRefresh, filterOptions, columns, rowProps,
         viewer, t,
+        maint, maintRows, openMaintenance, doCleanup,
       };
     },
     template: `
@@ -785,6 +871,7 @@
             <n-space v-if="taskList.open" size="small" align="center">
               <n-select v-model:value="taskList.filter" :options="filterOptions" size="small" style="width:110px;"></n-select>
               <n-button size="small" tertiary :loading="taskList.loading" @click="manualRefresh">{{ t('task.refresh') }}</n-button>
+              <n-button size="small" tertiary @click="openMaintenance">{{ t('maint.button') }}</n-button>
             </n-space>
           </n-space>
           <div v-if="taskList.open" class="dock-body" style="margin-top:12px;">
@@ -810,6 +897,25 @@
               </n-descriptions>
             </template>
             <div v-else style="min-height:80px;"></div>
+          </n-spin>
+        </n-modal>
+
+        <n-modal v-model:show="maint.show" preset="card" :title="t('maint.title')" style="max-width:440px;">
+          <n-spin :show="maint.loading">
+            <n-text depth="3" style="display:block;font-size:.84em;margin-bottom:10px;">{{ t('maint.desc') }}</n-text>
+            <div v-for="row in maintRows" :key="row.key"
+                 style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;">
+              <n-checkbox v-model:checked="maint.checked[row.key]" size="small" :disabled="!row.available">
+                {{ row.label }}
+              </n-checkbox>
+              <n-text depth="3" style="font-size:.82em;font-variant-numeric:tabular-nums;">
+                {{ !row.available ? t('maint.unavailable') : (!row.hasContent ? t('maint.empty') : row.sizeText) }}
+              </n-text>
+            </div>
+            <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
+              <n-button size="small" :disabled="maint.cleaning" @click="maint.show = false">{{ t('maint.negative') }}</n-button>
+              <n-button size="small" type="primary" :loading="maint.cleaning" @click="doCleanup">{{ t('maint.positive') }}</n-button>
+            </div>
           </n-spin>
         </n-modal>
       </div>`,
